@@ -5,11 +5,7 @@
  */
 package com.yahoo.squidb.sql;
 
-import android.text.TextUtils;
-import android.util.Log;
-
-import com.yahoo.squidb.utility.SquidUtilities;
-import com.yahoo.squidb.utility.VersionCode;
+import com.yahoo.squidb.utility.Logger;
 
 import java.util.Collections;
 import java.util.List;
@@ -97,14 +93,14 @@ public abstract class Criterion extends CompilableWithArguments {
      * empty, this will return null.
      *
      * Note: if you use Criterion.fromRawSelection in a SQL statement, you should not call
-     * {@link SqlStatement#toRawSql(VersionCode) toRawSql} on that statement and then execute the resulting SQL, as it
-     * may contain unbound arguments. Instead, execute the statement using e.g.
+     * {@link SqlStatement#toRawSql(CompileContext) toRawSql} on that statement and then execute the resulting SQL, as
+     * it may contain unbound arguments. Instead, execute the statement using e.g.
      * {@link com.yahoo.squidb.data.SquidDatabase#query(Class, Query) SquidDatabase.query},
      * {@link com.yahoo.squidb.data.SquidDatabase#update(Update) SquidDatabase.update}, or
      * {@link com.yahoo.squidb.data.SquidDatabase#delete(Delete) SquidDatabase.delete}
      */
     public static Criterion fromRawSelection(final String selection, final String[] selectionArgs) {
-        if (TextUtils.isEmpty(selection)) {
+        if (SqlUtils.isEmpty(selection)) {
             return null;
         }
         return new Criterion(null) {
@@ -116,8 +112,7 @@ public abstract class Criterion extends CompilableWithArguments {
                 builder.sql.append(selection);
                 if (selectionArgs != null && selectionArgs.length > 0) {
                     if (builder.args == null) {
-                        Log.w(SquidUtilities.LOG_TAG,
-                                "Raw selection criterion converted to raw SQL with unbound arguments");
+                        Logger.w(Logger.LOG_TAG, "Raw selection criterion converted to raw SQL with unbound arguments");
                     } else {
                         Collections.addAll(builder.args, selectionArgs);
                     }

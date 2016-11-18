@@ -5,11 +5,7 @@
  */
 package com.yahoo.squidb.sql;
 
-import android.text.TextUtils;
-
 import java.util.Collection;
-import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicReference;
 
 public class SqlUtils {
 
@@ -17,27 +13,27 @@ public class SqlUtils {
         /* no instantiation */
     }
 
-    public static Object resolveArgReferences(Object arg) {
-        boolean resolved = false;
-        while (!resolved) {
-            if (arg instanceof AtomicReference) {
-                arg = ((AtomicReference<?>) arg).get();
-            } else if (arg instanceof AtomicBoolean) { // Not a subclass of Number so DatabaseUtils won't handle it
-                arg = ((AtomicBoolean) arg).get() ? 1 : 0;
-                resolved = true;
-            } else if (arg instanceof ThreadLocal) {
-                arg = ((ThreadLocal<?>) arg).get();
-            } else {
-                resolved = true;
-            }
-        }
-        return arg;
+    public static boolean isEmpty(String str) {
+        return str == null || str.isEmpty();
     }
 
-    static void addInlineCollectionToSqlString(StringBuilder sql, Collection<?> values) {
+    public static boolean equals(String a, String b) {
+        return a == b ||
+                (a != null && b != null && a.length() == b.length() && a.equals(b));
+    }
+
+    /**
+     * Use an instance of ArgumentResolver instead, e.g. {@link DefaultArgumentResolver}
+     */
+    @Deprecated
+    public static Object resolveArgReferences(Object arg) {
+        return new DefaultArgumentResolver().resolveArgument(arg);
+    }
+
+    static void addInlineCollectionToSqlString(StringBuilder sql, ArgumentResolver argResolver, Collection<?> values) {
         if (values != null && !values.isEmpty()) {
-            for (Object t : values) {
-                sql.append(toSanitizedString(t));
+            for (Object value : values) {
+                sql.append(toSanitizedString(value, argResolver));
                 sql.append(",");
             }
             sql.deleteCharAt(sql.length() - 1);
@@ -47,8 +43,8 @@ public class SqlUtils {
     /**
      * Convert an arbitrary object to a string. If the object itself is a {@link String}, it will be sanitized.
      */
-    static String toSanitizedString(Object value) {
-        value = resolveArgReferences(value);
+    static String toSanitizedString(Object value, ArgumentResolver argResolver) {
+        value = argResolver.resolveArgument(value);
         if (value == null) {
             return "NULL";
         } else if (value instanceof Double || value instanceof Float) {
@@ -57,15 +53,41 @@ public class SqlUtils {
             return Long.toString(((Number) value).longValue());
         } else if (value instanceof Boolean) {
             return ((Boolean) value) ? "1" : "0";
+        } else if (value instanceof byte[]) {
+            return byteArrayToBlobLiteral((byte[]) value);
         } else {
             return sanitizeStringAsLiteral(String.valueOf(value));
         }
+    }
+
+    private static final char[] hexChars =
+            {'0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f'};
+
+    static String byteArrayToBlobLiteral(byte[] blob) {
+        if (blob.length == 0) {
+            return "X''"; // Empty blob
+        }
+        StringBuilder result = new StringBuilder("X'");
+        char[] resultChars = new char[blob.length * 2];
+        for (int i = 0; i < blob.length; i++) {
+            byte b = blob[i];
+            int byteAsInt = b & 0xff;
+            int upperBytes = byteAsInt >>> 4;
+            int lowerByes = byteAsInt & 0x0f;
+            resultChars[i * 2] = hexChars[upperBytes];
+            resultChars[i * 2 + 1] = hexChars[lowerByes];
+        }
+        result.append(new String(resultChars)).append("'");
+        return result.toString();
     }
 
     /**
      * Sanitize a {@link String} for use in a SQL statement
      */
     static String sanitizeStringAsLiteral(String literal) {
+        if (literal == null) {
+            return "NULL";
+        }
         String sanitizedLiteral = literal.replace("'", "''");
         int nullIndex = sanitizedLiteral.indexOf('\0');
         if (nullIndex >= 0) {
@@ -118,7 +140,7 @@ public class SqlUtils {
         if (escape == '%' || escape == '_') {
             throw new IllegalArgumentException("Invalid escape character: " + escape);
         }
-        if (TextUtils.isEmpty(pattern)) {
+        if (isEmpty(pattern)) {
             return "";
         }
         StringBuilder sb = new StringBuilder();

@@ -5,7 +5,6 @@
  */
 package com.yahoo.squidb.sql;
 
-import com.yahoo.squidb.data.SquidDatabase;
 import com.yahoo.squidb.data.TableModel;
 import com.yahoo.squidb.sql.Property.PropertyVisitor;
 import com.yahoo.squidb.utility.VersionCode;
@@ -16,6 +15,8 @@ import com.yahoo.squidb.utility.VersionCode;
  * that was registered with SQLite database connection. Android currently supports FTS3 and FTS4 modules.
  */
 public class VirtualTable extends Table {
+
+    private static final VersionCode SQLITE_VERSION_IF_NOT_EXISTS = new VersionCode(3, 7, 11, 0);
 
     private final String moduleName;
     private final Field<String> anyColumn;
@@ -42,12 +43,20 @@ public class VirtualTable extends Table {
 
     @Override
     public VirtualTable qualifiedFromDatabase(String databaseName) {
-        return new VirtualTable(modelClass, properties, getExpression(), databaseName, moduleName, alias);
+        VirtualTable result = new VirtualTable(modelClass, properties, getExpression(),
+                databaseName, moduleName, alias);
+        result.rowidProperty = rowidProperty;
+        return result;
     }
 
     @Override
     public VirtualTable as(String newAlias) {
-        return new VirtualTable(modelClass, properties, getExpression(), qualifier, moduleName, newAlias);
+        return (VirtualTable) super.as(newAlias);
+    }
+
+    @Override
+    protected VirtualTable asNewAliasWithPropertiesArray(String newAlias, Property<?>[] newProperties) {
+        return new VirtualTable(modelClass, newProperties, getExpression(), qualifier, moduleName, newAlias);
     }
 
     /**
@@ -65,14 +74,14 @@ public class VirtualTable extends Table {
     }
 
     /**
-     * Append a CREATE VIRTUAL TABLE statement that would create this table and its columns. Users normally should not
-     * call this method and instead let {@link SquidDatabase} build tables automatically.
+     * Append a CREATE VIRTUAL TABLE statement that would create this table and its columns. Users should not
+     * call this method and instead let {@link com.yahoo.squidb.data.SquidDatabase} build tables automatically.
      */
     @Override
-    public void appendCreateTableSql(VersionCode sqliteVersion, StringBuilder sql,
+    public void appendCreateTableSql(CompileContext compileContext, StringBuilder sql,
             PropertyVisitor<Void, StringBuilder> propertyVisitor) {
         sql.append("CREATE VIRTUAL TABLE ");
-        if (sqliteVersion != null && sqliteVersion.isAtLeast(VersionCode.V3_7_11)) {
+        if (compileContext != null && compileContext.getVersionCode().isAtLeast(SQLITE_VERSION_IF_NOT_EXISTS)) {
             sql.append("IF NOT EXISTS ");
         }
         sql.append(getExpression()).append(" USING ").append(moduleName).append('(');

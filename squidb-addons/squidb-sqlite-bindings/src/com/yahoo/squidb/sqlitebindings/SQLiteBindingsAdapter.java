@@ -5,23 +5,29 @@
  */
 package com.yahoo.squidb.sqlitebindings;
 
-import android.content.ContentValues;
-import android.database.Cursor;
-import android.util.Pair;
+import com.yahoo.squidb.android.SquidCursorWrapper;
+import com.yahoo.squidb.data.ICursor;
+import com.yahoo.squidb.data.ISQLiteDatabase;
+import com.yahoo.squidb.data.ISQLitePreparedStatement;
+import com.yahoo.squidb.data.SquidTransactionListener;
+import com.yahoo.squidb.utility.VersionCode;
 
-import com.yahoo.squidb.data.adapter.SQLExceptionWrapper;
-import com.yahoo.squidb.data.adapter.SQLiteDatabaseWrapper;
-import com.yahoo.squidb.data.adapter.SquidTransactionListener;
-
-import org.sqlite.database.SQLException;
 import org.sqlite.database.sqlite.SQLiteDatabase;
 import org.sqlite.database.sqlite.SQLiteStatement;
 import org.sqlite.database.sqlite.SQLiteTransactionListener;
 
-import java.util.List;
-import java.util.Locale;
+/**
+ * ISQLiteDatabase implementation that wraps {@link org.sqlite.database.sqlite.SQLiteDatabase} from the Android
+ * SQLite bindings project (https://www.sqlite.org/android/doc/trunk/www/index.wiki)
+ */
+public class SQLiteBindingsAdapter implements ISQLiteDatabase {
 
-public class SQLiteBindingsAdapter implements SQLiteDatabaseWrapper {
+    /**
+     * The version of SQLite bundled by default with the squidb-sqlite-bindings module. If any user builds this module
+     * from source with their own version of SQLite, they should update this definition to match the version of SQLite
+     * used.
+     */
+    public static final VersionCode SQLITE_VERSION = new VersionCode(3, 15, 0, 0);
 
     private final SQLiteDatabase db;
 
@@ -77,8 +83,97 @@ public class SQLiteBindingsAdapter implements SQLiteDatabaseWrapper {
     }
 
     @Override
-    public int delete(String table, String whereClause, String[] whereArgs) {
-        return db.delete(table, whereClause, whereArgs);
+    public void endTransaction() {
+        db.endTransaction();
+    }
+
+    @Override
+    public void execSQL(String sql) {
+        db.execSQL(sql);
+    }
+
+    @Override
+    public void execSQL(String sql, Object[] bindArgs) {
+        db.execSQL(sql, bindArgs);
+    }
+
+    @Override
+    public boolean inTransaction() {
+        return db.inTransaction();
+    }
+
+    @Override
+    public boolean isOpen() {
+        return db.isOpen();
+    }
+
+    @Override
+    public int getVersion() {
+        return db.getVersion();
+    }
+
+    @Override
+    public void setVersion(int version) {
+        db.setVersion(version);
+    }
+
+    @Override
+    public ICursor rawQuery(String sql, Object[] bindArgs) {
+        return new SquidCursorWrapper(
+                db.rawQueryWithFactory(new SQLiteBindingsCursorFactory(bindArgs), sql, null, null));
+    }
+
+    @Override
+    public String simpleQueryForString(String sql, Object[] bindArgs) {
+        SQLiteStatement statement = null;
+        try {
+            statement = db.compileStatement(sql);
+            SQLiteBindingsCursorFactory.bindArgumentsToProgram(statement, bindArgs);
+            return statement.simpleQueryForString();
+        } finally {
+            if (statement != null) {
+                statement.close();
+            }
+        }
+    }
+
+    @Override
+    public long simpleQueryForLong(String sql, Object[] bindArgs) {
+        SQLiteStatement statement = null;
+        try {
+            statement = db.compileStatement(sql);
+            SQLiteBindingsCursorFactory.bindArgumentsToProgram(statement, bindArgs);
+            return statement.simpleQueryForLong();
+        } finally {
+            if (statement != null) {
+                statement.close();
+            }
+        }
+    }
+
+    @Override
+    public void setTransactionSuccessful() {
+        db.setTransactionSuccessful();
+    }
+
+    @Override
+    public String toString() {
+        return db.toString();
+    }
+
+    @Override
+    public boolean yieldIfContendedSafely() {
+        return db.yieldIfContendedSafely();
+    }
+
+    @Override
+    public boolean yieldIfContendedSafely(long sleepAfterYieldDelay) {
+        return db.yieldIfContendedSafely(sleepAfterYieldDelay);
+    }
+
+    @Override
+    public void close() {
+        db.close();
     }
 
     @Override
@@ -92,31 +187,8 @@ public class SQLiteBindingsAdapter implements SQLiteDatabaseWrapper {
     }
 
     @Override
-    public void endTransaction() {
-        db.endTransaction();
-    }
-
-    @Override
-    public void execSQL(String sql) throws SQLExceptionWrapper {
-        try {
-            db.execSQL(sql);
-        } catch (SQLException e) {
-            throw new SQLExceptionWrapper(e);
-        }
-    }
-
-    @Override
-    public void execSQL(String sql, Object[] bindArgs) throws SQLExceptionWrapper {
-        try {
-            db.execSQL(sql, bindArgs);
-        } catch (SQLException e) {
-            throw new SQLExceptionWrapper(e);
-        }
-    }
-
-    @Override
-    public List<Pair<String, String>> getAttachedDbs() {
-        return db.getAttachedDbs();
+    public boolean isWriteAheadLoggingEnabled() {
+        return db.isWriteAheadLoggingEnabled();
     }
 
     @Override
@@ -135,32 +207,6 @@ public class SQLiteBindingsAdapter implements SQLiteDatabaseWrapper {
     }
 
     @Override
-    public int getVersion() {
-        return db.getVersion();
-    }
-
-    @Override
-    public boolean inTransaction() {
-        return db.inTransaction();
-    }
-
-    @Override
-    public long insert(String table, String nullColumnHack, ContentValues values) {
-        return db.insert(table, nullColumnHack, values);
-    }
-
-    @Override
-    public long insertOrThrow(String table, String nullColumnHack, ContentValues values) {
-        return db.insertOrThrow(table, nullColumnHack, values);
-    }
-
-    @Override
-    public long insertWithOnConflict(String table, String nullColumnHack, ContentValues initialValues,
-            int conflictAlgorithm) {
-        return db.insertWithOnConflict(table, nullColumnHack, initialValues, conflictAlgorithm);
-    }
-
-    @Override
     public boolean isDatabaseIntegrityOk() {
         return db.isDatabaseIntegrityOk();
     }
@@ -171,24 +217,8 @@ public class SQLiteBindingsAdapter implements SQLiteDatabaseWrapper {
     }
 
     @Override
-    @Deprecated
-    public boolean isDbLockedByOtherThreads() {
-        return db.isDbLockedByOtherThreads();
-    }
-
-    @Override
-    public boolean isOpen() {
-        return db.isOpen();
-    }
-
-    @Override
     public boolean isReadOnly() {
         return db.isReadOnly();
-    }
-
-    @Override
-    public boolean isWriteAheadLoggingEnabled() {
-        return db.isWriteAheadLoggingEnabled();
     }
 
     @Override
@@ -197,34 +227,8 @@ public class SQLiteBindingsAdapter implements SQLiteDatabaseWrapper {
     }
 
     @Override
-    public Cursor rawQuery(String sql, Object[] bindArgs) {
-        return db.rawQueryWithFactory(new SQLiteBindingsCursorFactory(bindArgs), sql, null, null);
-    }
-
-    @Override
-    public long replace(String table, String nullColumnHack, ContentValues initialValues) {
-        return db.replace(table, nullColumnHack, initialValues);
-    }
-
-    @Override
-    public long replaceOrThrow(String table, String nullColumnHack, ContentValues initialValues) {
-        return db.replaceOrThrow(table, nullColumnHack, initialValues);
-    }
-
-    @Override
     public void setForeignKeyConstraintsEnabled(boolean enable) {
         db.setForeignKeyConstraintsEnabled(enable);
-    }
-
-    @Override
-    public void setLocale(Locale locale) {
-        db.setLocale(locale);
-    }
-
-    @Override
-    @Deprecated
-    public void setLockingEnabled(boolean lockingEnabled) {
-        db.setLockingEnabled(lockingEnabled);
     }
 
     @Override
@@ -240,77 +244,6 @@ public class SQLiteBindingsAdapter implements SQLiteDatabaseWrapper {
     @Override
     public void setPageSize(long numBytes) {
         db.setPageSize(numBytes);
-    }
-
-    @Override
-    public void setTransactionSuccessful() {
-        db.setTransactionSuccessful();
-    }
-
-    @Override
-    public void setVersion(int version) {
-        db.setVersion(version);
-    }
-
-    @Override
-    public String toString() {
-        return db.toString();
-    }
-
-    @Override
-    public int update(String table, ContentValues values, String whereClause, String[] whereArgs) {
-        return db.update(table, values, whereClause, whereArgs);
-    }
-
-    @Override
-    public int updateWithOnConflict(String table, ContentValues values, String whereClause, String[] whereArgs,
-            int conflictAlgorithm) {
-        return db.updateWithOnConflict(table, values, whereClause, whereArgs, conflictAlgorithm);
-    }
-
-    @Override
-    public boolean yieldIfContendedSafely(long sleepAfterYieldDelay) {
-        return db.yieldIfContendedSafely(sleepAfterYieldDelay);
-    }
-
-    @Override
-    public boolean yieldIfContendedSafely() {
-        return db.yieldIfContendedSafely();
-    }
-
-    @Override
-    public void acquireReference() {
-        db.acquireReference();
-    }
-
-    @Override
-    public void close() {
-        db.close();
-    }
-
-    @Override
-    public void releaseReference() {
-        db.releaseReference();
-    }
-
-    @Override
-    @Deprecated
-    public void releaseReferenceFromContainer() {
-        db.releaseReferenceFromContainer();
-    }
-
-    @Override
-    public String simpleQueryForString(String sql, Object[] bindArgs) {
-        SQLiteStatement statement = null;
-        try {
-            statement = db.compileStatement(sql);
-            SQLiteBindingsCursorFactory.bindArgumentsToProgram(statement, bindArgs);
-            return statement.simpleQueryForString();
-        } finally {
-            if (statement != null) {
-                statement.close();
-            }
-        }
     }
 
     @Override
@@ -354,7 +287,12 @@ public class SQLiteBindingsAdapter implements SQLiteDatabaseWrapper {
     }
 
     @Override
-    public SQLiteDatabase getWrappedDatabase() {
+    public ISQLitePreparedStatement prepareStatement(String sql) {
+        return new SQLiteBindingsStatementAdapter(db.compileStatement(sql));
+    }
+
+    @Override
+    public SQLiteDatabase getWrappedObject() {
         return db;
     }
 }

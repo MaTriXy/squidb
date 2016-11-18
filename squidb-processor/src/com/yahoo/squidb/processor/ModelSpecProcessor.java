@@ -16,14 +16,13 @@ import com.yahoo.squidb.processor.writers.TableModelFileWriter;
 import com.yahoo.squidb.processor.writers.ViewModelFileWriter;
 
 import java.io.IOException;
+import java.util.Collections;
 import java.util.HashSet;
 import java.util.Set;
 
 import javax.annotation.processing.AbstractProcessor;
-import javax.annotation.processing.Filer;
 import javax.annotation.processing.ProcessingEnvironment;
 import javax.annotation.processing.RoundEnvironment;
-import javax.annotation.processing.SupportedSourceVersion;
 import javax.lang.model.SourceVersion;
 import javax.lang.model.element.Element;
 import javax.lang.model.element.ElementKind;
@@ -51,37 +50,43 @@ import javax.tools.Diagnostic.Kind;
  * }
  * </pre>
  */
-@SupportedSourceVersion(SourceVersion.RELEASE_6)
 public final class ModelSpecProcessor extends AbstractProcessor {
 
-    private AptUtils utils;
-    private Filer filer;
+    private Set<String> supportedAnnotationTypes = new HashSet<>();
 
+    private AptUtils utils;
     private PluginEnvironment pluginEnv;
+
+    public ModelSpecProcessor() {
+        supportedAnnotationTypes.add(TableModelSpec.class.getName());
+        supportedAnnotationTypes.add(ViewModelSpec.class.getName());
+        supportedAnnotationTypes.add(InheritedModelSpec.class.getName());
+    }
+
+    @Override
+    public SourceVersion getSupportedSourceVersion() {
+        return SourceVersion.latestSupported();
+    }
 
     @Override
     public Set<String> getSupportedAnnotationTypes() {
-        Set<String> result = new HashSet<String>();
-        result.add(TableModelSpec.class.getName());
-        result.add(ViewModelSpec.class.getName());
-        result.add(InheritedModelSpec.class.getName());
-        return result;
+        return supportedAnnotationTypes;
     }
 
     @Override
     public Set<String> getSupportedOptions() {
-        Set<String> supportedOptions = new HashSet<String>();
+        Set<String> supportedOptions = new HashSet<>();
         supportedOptions.add(PluginEnvironment.PLUGINS_KEY);
         supportedOptions.add(PluginEnvironment.OPTIONS_KEY);
-        return supportedOptions;
+        supportedOptions.addAll(pluginEnv.getPluginSupportedOptions());
+        return Collections.unmodifiableSet(supportedOptions);
     }
 
     @Override
     public synchronized void init(ProcessingEnvironment env) {
         super.init(env);
 
-        utils = new AptUtils(env.getMessager(), env.getTypeUtils());
-        filer = env.getFiler();
+        utils = new AptUtils(env);
 
         pluginEnv = new PluginEnvironment(utils, env.getOptions());
     }
@@ -89,18 +94,23 @@ public final class ModelSpecProcessor extends AbstractProcessor {
     @Override
     public boolean process(Set<? extends TypeElement> annotations, RoundEnvironment env) {
         for (TypeElement annotationType : annotations) {
-            for (Element element : env.getElementsAnnotatedWith(annotationType)) {
-                if (element.getKind() == ElementKind.CLASS) {
-                    TypeElement typeElement = (TypeElement) element;
-                    try {
-                        getFileWriter(typeElement).writeJava(filer);
-                    } catch (IOException e) {
-                        utils.getMessager().printMessage(Kind.ERROR, "Unable to write model file", element);
+            if (supportedAnnotationTypes.contains(annotationType.getQualifiedName().toString())) {
+                for (Element element : env.getElementsAnnotatedWith(annotationType)) {
+                    if (element.getKind() == ElementKind.CLASS) {
+                        TypeElement typeElement = (TypeElement) element;
+                        try {
+                            getFileWriter(typeElement).writeJava();
+                        } catch (IOException e) {
+                            utils.getMessager().printMessage(Kind.ERROR, "Unable to write model file", element);
+                        }
+                    } else {
+                        utils.getMessager()
+                                .printMessage(Kind.ERROR, "Unexpected element type " + element.getKind(), element);
                     }
-                } else {
-                    utils.getMessager()
-                            .printMessage(Kind.ERROR, "Unexpected element type " + element.getKind(), element);
                 }
+            } else {
+                utils.getMessager().printMessage(Kind.WARNING,
+                        "Skipping unsupported annotation received by processor: " + annotationType);
             }
         }
 

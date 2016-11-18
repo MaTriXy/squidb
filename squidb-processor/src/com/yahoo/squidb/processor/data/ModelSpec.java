@@ -50,12 +50,23 @@ public abstract class ModelSpec<T extends Annotation> {
     protected final DeclaredTypeName modelSpecName;
     protected final TypeElement modelSpecElement;
 
-    private final List<PropertyGenerator> propertyGenerators = new ArrayList<PropertyGenerator>();
-    private final List<PropertyGenerator> deprecatedPropertyGenerators = new ArrayList<PropertyGenerator>();
-    private final Map<String, Object> metadataMap = new HashMap<String, Object>();
+    private final List<PropertyGenerator> propertyGenerators = new ArrayList<>();
+    private final List<PropertyGenerator> deprecatedPropertyGenerators = new ArrayList<>();
+    private final Map<String, Object> metadataMap = new HashMap<>();
 
     protected final AptUtils utils;
     protected final PluginBundle pluginBundle;
+    protected final boolean androidModels;
+    private final DeclaredTypeName modelSuperclass;
+
+    public interface ModelSpecVisitor<RETURN, PARAMETER> {
+
+        RETURN visitTableModel(TableModelSpecWrapper modelSpec, PARAMETER data);
+
+        RETURN visitViewModel(ViewModelSpecWrapper modelSpec, PARAMETER data);
+
+        RETURN visitInheritedModel(InheritedModelSpecWrapper modelSpec, PARAMETER data);
+    }
 
     public ModelSpec(TypeElement modelSpecElement, Class<T> modelSpecClass,
             PluginEnvironment pluginEnv, AptUtils utils) {
@@ -65,9 +76,11 @@ public abstract class ModelSpec<T extends Annotation> {
         this.modelSpecAnnotation = modelSpecElement.getAnnotation(modelSpecClass);
         this.generatedClassName = new DeclaredTypeName(modelSpecName.getPackageName(), getGeneratedClassNameString());
         this.pluginBundle = pluginEnv.getPluginBundleForModelSpec(this);
+        this.androidModels = pluginEnv.hasSquidbOption(PluginEnvironment.OPTIONS_GENERATE_ANDROID_MODELS);
 
         processVariableElements();
         pluginBundle.afterProcessVariableElements();
+        modelSuperclass = initializeModelSuperclass();
     }
 
     private void processVariableElements() {
@@ -79,7 +92,9 @@ public abstract class ModelSpec<T extends Annotation> {
                             "Element type " + typeName + " is not a concrete type, will be ignored", e);
                 } else if (!pluginBundle.processVariableElement((VariableElement) e, (DeclaredTypeName) typeName)) {
                     // Deprecated things are generally ignored by plugins, so don't warn about them
-                    if (e.getAnnotation(Deprecated.class) == null) {
+                    // private static final fields are generally internal model spec constants, so don't warn about them
+                    if (e.getAnnotation(Deprecated.class) == null &&
+                            !e.getModifiers().containsAll(TypeConstants.PRIVATE_STATIC_FINAL)) {
                         utils.getMessager().printMessage(Diagnostic.Kind.WARNING,
                                 "No plugin found to handle field", e);
                     }
@@ -88,12 +103,29 @@ public abstract class ModelSpec<T extends Annotation> {
         }
     }
 
+    private DeclaredTypeName initializeModelSuperclass() {
+        DeclaredTypeName pluginSuperclass = pluginBundle.getModelSuperclass();
+        if (pluginSuperclass != null) {
+            return pluginSuperclass;
+        }
+        return getDefaultModelSuperclass();
+    }
+
+    public abstract <RETURN, PARAMETER> RETURN accept(ModelSpecVisitor<RETURN, PARAMETER> visitor, PARAMETER data);
+
     protected abstract String getGeneratedClassNameString();
+
+    /**
+     * @return the name of the default superclass for the generated model. This may be overridden by a plugin
+     */
+    protected abstract DeclaredTypeName getDefaultModelSuperclass();
 
     /**
      * @return the name of the superclass for the generated model
      */
-    public abstract DeclaredTypeName getModelSuperclass();
+    public final DeclaredTypeName getModelSuperclass() {
+        return modelSuperclass;
+    }
 
     /**
      * Adds imports required by this model spec to the given accumulator set
@@ -102,7 +134,7 @@ public abstract class ModelSpec<T extends Annotation> {
      */
     public final void addRequiredImports(Set<DeclaredTypeName> imports) {
         imports.add(TypeConstants.PROPERTY); // For PROPERTIES array
-        imports.add(TypeConstants.ABSTRACT_MODEL); // For CREATOR
+        imports.add(TypeConstants.VALUES_STORAGE);
         imports.add(getModelSuperclass());
         for (PropertyGenerator generator : propertyGenerators) {
             generator.registerRequiredImports(imports);
@@ -179,9 +211,9 @@ public abstract class ModelSpec<T extends Annotation> {
     /**
      * Attach arbitrary metadata to this model spec objects. Plugins can store metadata and then retrieve it later with
      * {@link #getMetadata(String)}
+     *
      * @param metadataKey key for storing/retrieving the metadata
      * @param metadata the metadata to store
-     *
      * @see #hasMetadata(String)
      * @see #getMetadata(String)
      */
@@ -192,7 +224,6 @@ public abstract class ModelSpec<T extends Annotation> {
     /**
      * @param metadataKey the metadata key to look up
      * @return true if there is metadata stored for the given key, false otherwise
-     *
      * @see #putMetadata(String, Object)
      * @see #getMetadata(String)
      */
@@ -202,9 +233,9 @@ public abstract class ModelSpec<T extends Annotation> {
 
     /**
      * Retrieve metadata that was previously attached with {@link #putMetadata(String, Object)}
+     *
      * @param metadataKey key for storing/retrieving metadata
      * @return the metadata object for the given key if one was found, null otherwise
-     *
      * @see #putMetadata(String, Object)
      * @see #hasMetadata(String)
      */

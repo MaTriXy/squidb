@@ -5,7 +5,6 @@
  */
 package com.yahoo.squidb.sql;
 
-import com.yahoo.squidb.data.SquidCursor;
 import com.yahoo.squidb.utility.VersionCode;
 
 /**
@@ -20,8 +19,9 @@ import com.yahoo.squidb.utility.VersionCode;
  * SquidCursor&lt;Model&gt; cursor = db.query(Model.class, query);
  * </pre>
  *
- * This allows the value to be read directly from the cursor using {@link SquidCursor#get(Property) get(Property)}, or
- * to be read from a model instance that was created by reading from the cursor:
+ * This allows the value to be read directly from the cursor using
+ * {@link com.yahoo.squidb.data.SquidCursor#get(Property) get(Property)}, or to be read from a model instance that was
+ * created by reading from the cursor:
  *
  * <pre>
  * cursor.moveToPosition(position);
@@ -61,32 +61,42 @@ public abstract class Function<TYPE> extends Field<TYPE> {
     }
 
     /**
-     * Return the expression for the function as it would be compiled for the given SQLite version
+     * @return the expression for the function as it would be compiled for the given SQLite version and default
+     * CompileContext. Deprecated in favor of {@link #getExpression(CompileContext)}
+     * @see #getExpression(CompileContext)
      */
+    @Deprecated
     public String getExpression(VersionCode forSqliteVersion) {
-        SqlBuilder builder = new SqlBuilder(forSqliteVersion, false);
+        return getExpression(CompileContext.defaultContextForVersionCode(forSqliteVersion));
+    }
+
+    /**
+     * @return the expression for the function as it would be compiled with the given CompileContext
+     */
+    public String getExpression(CompileContext forCompileContext) {
+        SqlBuilder builder = new SqlBuilder(forCompileContext, false);
         appendQualifiedExpression(builder, false);
         return builder.getSqlString();
     }
 
     @Override
     protected String expressionForComparison() {
-        return getExpression(VersionCode.LATEST);
+        return getExpression(CompileContext.defaultContextForVersionCode(VERSION_FOR_TO_STRING));
     }
 
     /**
-     * Create a Function call with the given name and list of arguments. Returns
-     * a function equivalent to "functionName(arg1, arg2, ...)"
+     * Create a Function call with the given name and list of arguments. Returns a function equivalent to
+     * "functionName(arg1, arg2, ...)"
      */
     public static <T> Function<T> functionWithArguments(String functionName, Object... arguments) {
-        return new ArgumentFunction<T>(functionName, arguments);
+        return new ArgumentFunction<>(functionName, arguments);
     }
 
     /**
      * Create a Function with the given expression
      */
     public static <T> Function<T> rawFunction(String expression) {
-        return new RawFunction<T>(expression);
+        return new RawFunction<>(expression);
     }
 
     /**
@@ -94,21 +104,21 @@ public abstract class Function<TYPE> extends Field<TYPE> {
      * result set (i.e. one field in the SELECT clause) for this to be valid SQL.
      */
     public static <T> Function<T> fromQuery(Query query) {
-        return new QueryFunction<T>(query);
+        return new QueryFunction<>(query);
     }
 
     /**
      * Create a Function that transforms all ASCII characters of an input string to uppercase
      */
     public static Function<String> upper(Field<String> field) {
-        return new ArgumentFunction<String>("UPPER", field);
+        return new ArgumentFunction<>("UPPER", field);
     }
 
     /**
      * Create a Function that transforms all ASCII characters of an input string to lowercase
      */
     public static Function<String> lower(Field<String> field) {
-        return new ArgumentFunction<String>("LOWER", field);
+        return new ArgumentFunction<>("LOWER", field);
     }
 
     /**
@@ -116,7 +126,7 @@ public abstract class Function<TYPE> extends Field<TYPE> {
      * 1-indexed, i.e. the leftmost character is index 1.
      */
     public static Function<String> substr(Field<String> field, Object start) {
-        return new ArgumentFunction<String>("SUBSTR", field, start);
+        return new ArgumentFunction<>("SUBSTR", field, start);
     }
 
     /**
@@ -124,7 +134,7 @@ public abstract class Function<TYPE> extends Field<TYPE> {
      * characters. Note that substring in SQLite is 1-indexed, i.e. the leftmost character is index 1.
      */
     public static Function<String> substr(Field<String> field, Object start, Object length) {
-        return new ArgumentFunction<String>("SUBSTR", field, start, length);
+        return new ArgumentFunction<>("SUBSTR", field, start, length);
     }
 
     /**
@@ -146,21 +156,21 @@ public abstract class Function<TYPE> extends Field<TYPE> {
      * Create a Function that counts all rows (i.e. count(*))
      */
     public static Function<Integer> count() {
-        return new RawFunction<Integer>("COUNT(*)");
+        return new RawFunction<>("COUNT(*)");
     }
 
     /**
      * Create a Function that counts the number of values of the specified field
      */
     public static Function<Integer> count(Field<?> field) {
-        return new ArgumentFunction<Integer>("COUNT", field);
+        return new ArgumentFunction<>("COUNT", field);
     }
 
     /**
      * @return a Function that counts the number of distinct values of the specified field
      */
     public static Function<Integer> countDistinct(Field<?> field) {
-        return new DistinctArgumentFunction<Integer>("COUNT", field);
+        return new DistinctArgumentFunction<>("COUNT", field);
     }
 
     /**
@@ -169,77 +179,77 @@ public abstract class Function<TYPE> extends Field<TYPE> {
      * bytes in the blob. For numeric input, returns the length of a string representation of the number.
      */
     public static Function<Integer> length(Field<?> field) {
-        return new ArgumentFunction<Integer>("LENGTH", field);
+        return new ArgumentFunction<>("LENGTH", field);
     }
 
     /**
      * Create a function that returns the maximum value of all values in a group
      */
     public static <T> Function<T> max(Field<T> field) {
-        return new ArgumentFunction<T>("MAX", field);
+        return new ArgumentFunction<>("MAX", field);
     }
 
     /**
      * Create a function that returns the minimum value of all values in a group
      */
     public static <T> Function<T> min(Field<T> field) {
-        return new ArgumentFunction<T>("MIN", field);
+        return new ArgumentFunction<>("MIN", field);
     }
 
     /**
      * Create a function that returns the sum of values in a group
      */
     public static <T extends Number> Function<T> sum(Field<T> field) {
-        return new ArgumentFunction<T>("SUM", field);
+        return new ArgumentFunction<>("SUM", field);
     }
 
     /**
      * Create a function that returns the sum of distinct values in a group
      */
     public static <T extends Number> Function<T> sumDistinct(Field<T> field) {
-        return new DistinctArgumentFunction<T>("SUM", field);
+        return new DistinctArgumentFunction<>("SUM", field);
     }
 
     /**
      * Create a function that returns the average value in a group
      */
     public static <T extends Number> Function<Double> avg(Field<T> field) {
-        return new ArgumentFunction<Double>("AVG", field);
+        return new ArgumentFunction<>("AVG", field);
     }
 
     /**
      * Create a function that returns the average value of the distinct values in a group
      */
     public static <T extends Number> Function<Double> avgDistinct(Field<T> field) {
-        return new DistinctArgumentFunction<Double>("AVG", field);
+        return new DistinctArgumentFunction<>("AVG", field);
     }
 
     /**
      * Create a function that returns the absolute value of a numeric input
      */
     public static <T extends Number> Function<T> abs(Field<T> field) {
-        return new ArgumentFunction<T>("ABS", field);
+        return new ArgumentFunction<>("ABS", field);
     }
 
     /**
      * Create a Function that concatenates non-null values in a group, separated by commas
      */
     public static Function<String> groupConcat(Field<?> field) {
-        return new ArgumentFunction<String>("GROUP_CONCAT", field);
+        return new ArgumentFunction<>("GROUP_CONCAT", field);
     }
 
     /**
      * Create a Function that concatenates non-null distinct values in a group, separated by commas
      */
     public static Function<String> groupConcatDistinct(Field<?> field) {
-        return new DistinctArgumentFunction<String>("GROUP_CONCAT", field);
+        return new DistinctArgumentFunction<>("GROUP_CONCAT", field);
     }
 
     /**
      * Create a Function that concatenates non-null values in a group, separated by the specified separator
      */
     public static Function<String> groupConcat(Field<?> field, String separator) {
-        return new ArgumentFunction<String>("GROUP_CONCAT", field, separator);
+        return new ArgumentFunction<>("GROUP_CONCAT", field, separator);
     }
 
     /**
@@ -292,55 +302,55 @@ public abstract class Function<TYPE> extends Field<TYPE> {
      * null, this function returns null.
      */
     public static <T> Function<T> coalesce(Object... values) {
-        return new ArgumentFunction<T>("COALESCE", values);
+        return new ArgumentFunction<>("COALESCE", values);
     }
 
     /**
      * Create a Function that evaluates an arithmetic addition expression
      */
     public static <T extends Number> Function<T> add(Object... args) {
-        return new MathFunction<T>(MathOperator.PLUS, args);
+        return new MathFunction<>(MathOperator.PLUS, args);
     }
 
     /**
      * Create a Function that evaluates an arithmetic subtraction expression
      */
     public static <T extends Number> Function<T> subtract(Object... args) {
-        return new MathFunction<T>(MathOperator.MINUS, args);
+        return new MathFunction<>(MathOperator.MINUS, args);
     }
 
     /**
      * Create a Function that evaluates an arithmetic multiplication expression
      */
     public static <T extends Number> Function<T> multiply(Object... args) {
-        return new MathFunction<T>(MathOperator.MULT, args);
+        return new MathFunction<>(MathOperator.MULT, args);
     }
 
     /**
      * Create a Function that evaluates an arithmetic division expression
      */
     public static <T extends Number> Function<T> divide(Object... args) {
-        return new MathFunction<T>(MathOperator.DIVIDE, args);
+        return new MathFunction<>(MathOperator.DIVIDE, args);
     }
 
     /**
      * Create a Function that evaluates an arithmetic modulo expression
      */
     public static <T extends Number> Function<T> modulo(Object lhs, Object rhs) {
-        return new MathFunction<T>(MathOperator.MODULO, lhs, rhs);
+        return new MathFunction<>(MathOperator.MODULO, lhs, rhs);
     }
 
     /**
      * Create a Function that evaluates a binary AND expression
      */
     public static <T extends Number> Function<T> bitwiseAnd(Object... args) {
-        return new MathFunction<T>(MathOperator.BITWISE_AND, args);
+        return new MathFunction<>(MathOperator.BITWISE_AND, args);
     }
 
     /**
      * Create a Function that evaluates a binary OR expression
      */
     public static <T extends Number> Function<T> bitwiseOr(Object... args) {
-        return new MathFunction<T>(MathOperator.BITWISE_OR, args);
+        return new MathFunction<>(MathOperator.BITWISE_OR, args);
     }
 }

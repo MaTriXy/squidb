@@ -5,13 +5,9 @@
  */
 package com.yahoo.squidb.sql;
 
-import android.text.TextUtils;
-
-import com.yahoo.squidb.data.SquidDatabase;
 import com.yahoo.squidb.data.TableModel;
 import com.yahoo.squidb.sql.Property.LongProperty;
 import com.yahoo.squidb.sql.Property.PropertyVisitor;
-import com.yahoo.squidb.utility.VersionCode;
 
 /**
  * A standard SQLite table.
@@ -19,7 +15,7 @@ import com.yahoo.squidb.utility.VersionCode;
 public class Table extends SqlTable<TableModel> {
 
     private final String tableConstraint;
-    private LongProperty idProperty;
+    protected LongProperty rowidProperty;
 
     public Table(Class<? extends TableModel> modelClass, Property<?>[] properties, String name) {
         this(modelClass, properties, name, null);
@@ -44,15 +40,20 @@ public class Table extends SqlTable<TableModel> {
 
     public Table qualifiedFromDatabase(String databaseName) {
         Table result = new Table(modelClass, properties, getExpression(), databaseName, tableConstraint, alias);
-        result.idProperty = idProperty;
+        result.rowidProperty = rowidProperty;
         return result;
     }
 
     @Override
     public Table as(String newAlias) {
-        Table result = new Table(modelClass, properties, getExpression(), qualifier, tableConstraint, newAlias);
-        result.idProperty = result.qualifyField(idProperty);
+        Table result = (Table) super.as(newAlias);
+        result.rowidProperty = rowidProperty == null ? null : result.qualifyField(rowidProperty);
         return result;
+    }
+
+    @Override
+    protected Table asNewAliasWithPropertiesArray(String newAlias, Property<?>[] newProperties) {
+        return new Table(modelClass, newProperties, getExpression(), qualifier, tableConstraint, newAlias);
     }
 
     /**
@@ -91,21 +92,24 @@ public class Table extends SqlTable<TableModel> {
     }
 
     /**
-     * Append a CREATE TABLE statement that would create this table and its columns. Users normally should not call
-     * this method and instead let {@link SquidDatabase} build tables automatically.
+     * Append a CREATE TABLE statement that would create this table and its columns. Users should not call
+     * this method and instead let {@link com.yahoo.squidb.data.SquidDatabase} build tables automatically.
      */
-    public void appendCreateTableSql(VersionCode sqliteVersion, StringBuilder sql,
+    public void appendCreateTableSql(CompileContext compileContext, StringBuilder sql,
             PropertyVisitor<Void, StringBuilder> propertyVisitor) {
         sql.append("CREATE TABLE IF NOT EXISTS ").append(getExpression()).append('(');
         boolean needsComma = false;
         for (Property<?> property : properties) {
+            if (TableModel.ROWID.equals(property.getExpression())) {
+                continue;
+            }
             if (needsComma) {
                 sql.append(", ");
             }
             property.accept(propertyVisitor, sql);
             needsComma = true;
         }
-        if (!TextUtils.isEmpty(getTableConstraint())) {
+        if (!SqlUtils.isEmpty(getTableConstraint())) {
             sql.append(", ").append(getTableConstraint());
         }
         sql.append(')');
@@ -115,22 +119,30 @@ public class Table extends SqlTable<TableModel> {
      * Sets the primary key column for this table. Do not call this method! Exposed only so that it can be set
      * when initializing a model class.
      *
-     * @param idProperty a LongProperty representing the table's primary key id column
+     * @param rowidProperty a LongProperty representing the table's primary key id column
      */
-    public void setIdProperty(LongProperty idProperty) {
-        if (this.idProperty != null) {
-            throw new UnsupportedOperationException("Can't call setIdProperty on a Table more than once");
+    public void setRowIdProperty(LongProperty rowidProperty) {
+        if (this.rowidProperty != null) {
+            throw new UnsupportedOperationException("Can't call setRowIdProperty on a Table more than once");
         }
-        this.idProperty = idProperty;
+        this.rowidProperty = rowidProperty;
     }
 
     /**
-     * @return the property representing the table's primary key id column
+     * @return the property representing the table's rowid column (or a integer primary key rowid alias if one exists)
      */
-    public LongProperty getIdProperty() {
-        if (idProperty == null) {
+    public LongProperty getRowIdProperty() {
+        if (rowidProperty == null) {
             throw new UnsupportedOperationException("Table " + getExpression() + " has no id property defined");
         }
-        return idProperty;
+        return rowidProperty;
+    }
+
+    /**
+     * Deprecated alias for {@link #getRowIdProperty()}
+     */
+    @Deprecated
+    public LongProperty getIdProperty() {
+        return getRowIdProperty();
     }
 }

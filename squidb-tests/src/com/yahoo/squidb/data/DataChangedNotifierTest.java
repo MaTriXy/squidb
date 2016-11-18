@@ -5,13 +5,11 @@
  */
 package com.yahoo.squidb.data;
 
-import android.net.Uri;
-import android.text.format.DateUtils;
-
 import com.yahoo.squidb.sql.Delete;
 import com.yahoo.squidb.sql.Insert;
 import com.yahoo.squidb.sql.SqlTable;
 import com.yahoo.squidb.sql.Update;
+import com.yahoo.squidb.test.Constants;
 import com.yahoo.squidb.test.DatabaseTestCase;
 import com.yahoo.squidb.test.Employee;
 import com.yahoo.squidb.test.TestModel;
@@ -77,7 +75,7 @@ public class DataChangedNotifierTest extends DatabaseTestCase {
 
         notifier.reset();
         database.unregisterDataChangedNotifier(notifier);
-        database.delete(TestModel.class, t1.getId());
+        database.delete(TestModel.class, t1.getRowId());
         assertFalse(notifier.accumulateCalled);
         assertFalse(notifier.sendNotificationCalled);
     }
@@ -122,7 +120,7 @@ public class DataChangedNotifierTest extends DatabaseTestCase {
                 database.persist(t1);
             }
         };
-        testForParameters(toRun, TestModel.TABLE, DataChangedNotifier.DBOperation.UPDATE, t1, t1.getId());
+        testForParameters(toRun, TestModel.TABLE, DataChangedNotifier.DBOperation.UPDATE, t1, t1.getRowId());
 
         insertBasicTestModel("Sam", "Bosley", System.currentTimeMillis());
         final TestModel template = new TestModel().setFirstName("The");
@@ -149,10 +147,10 @@ public class DataChangedNotifierTest extends DatabaseTestCase {
         Runnable toRun = new Runnable() {
             @Override
             public void run() {
-                database.delete(TestModel.class, t1.getId());
+                database.delete(TestModel.class, t1.getRowId());
             }
         };
-        testForParameters(toRun, TestModel.TABLE, DataChangedNotifier.DBOperation.DELETE, null, t1.getId());
+        testForParameters(toRun, TestModel.TABLE, DataChangedNotifier.DBOperation.DELETE, null, t1.getRowId());
 
         insertBasicTestModel("Sam", "Bosley", System.currentTimeMillis());
         toRun = new Runnable() {
@@ -163,7 +161,7 @@ public class DataChangedNotifierTest extends DatabaseTestCase {
         };
         testForParameters(toRun, TestModel.TABLE, DataChangedNotifier.DBOperation.DELETE, null, 0);
 
-        insertBasicTestModel("Sam", "Bosley", System.currentTimeMillis() + DateUtils.DAY_IN_MILLIS);
+        insertBasicTestModel("Sam", "Bosley", System.currentTimeMillis() + Constants.DAY_IN_MILLIS);
         toRun = new Runnable() {
             @Override
             public void run() {
@@ -212,15 +210,15 @@ public class DataChangedNotifierTest extends DatabaseTestCase {
     }
 
     public void testGlobalNotifiersNotifiedForAllTables() {
-        final Set<SqlTable<?>> calledForTables = new HashSet<SqlTable<?>>();
+        final Set<SqlTable<?>> calledForTables = new HashSet<>();
         TestDataChangedNotifier globalNotifier = new TestDataChangedNotifier() {
             @Override
             protected boolean accumulateNotificationObjects(Set<TestDataChangedNotifier> accumulatorSet,
-                    SqlTable<?> table,
-                    SquidDatabase database, DBOperation operation, AbstractModel modelValues, long rowId) {
+                    SqlTable<?> table, SquidDatabase database, DBOperation operation,
+                    AbstractModel modelValues, long rowId) {
                 calledForTables.add(table);
-                return super
-                        .accumulateNotificationObjects(accumulatorSet, table, database, operation, modelValues, rowId);
+                return super.accumulateNotificationObjects(accumulatorSet, table, database, operation,
+                        modelValues, rowId);
             }
         };
 
@@ -280,13 +278,6 @@ public class DataChangedNotifierTest extends DatabaseTestCase {
     }
 
     public void testNotifierConstructors() {
-        testNotifierConstructorsInternal(new UriNotifier() {
-            @Override
-            protected boolean accumulateNotificationObjects(Set<Uri> accumulatorSet, SqlTable<?> table,
-                    SquidDatabase database, DBOperation operation, AbstractModel modelValues, long rowId) {
-                return false;
-            }
-        });
         testNotifierConstructorsInternal(new SimpleDataChangedNotifier() {
             @Override
             protected void onDataChanged() {
@@ -294,13 +285,6 @@ public class DataChangedNotifierTest extends DatabaseTestCase {
             }
         });
 
-        testNotifierConstructorsInternal(new UriNotifier(TestModel.TABLE) {
-            @Override
-            protected boolean accumulateNotificationObjects(Set<Uri> accumulatorSet, SqlTable<?> table,
-                    SquidDatabase database, DBOperation operation, AbstractModel modelValues, long rowId) {
-                return false;
-            }
-        }, TestModel.TABLE);
         testNotifierConstructorsInternal(new SimpleDataChangedNotifier(TestModel.TABLE) {
             @Override
             protected void onDataChanged() {
@@ -308,13 +292,6 @@ public class DataChangedNotifierTest extends DatabaseTestCase {
             }
         }, TestModel.TABLE);
 
-        testNotifierConstructorsInternal(new UriNotifier(Arrays.asList(TestModel.TABLE, Employee.TABLE)) {
-            @Override
-            protected boolean accumulateNotificationObjects(Set<Uri> accumulatorSet, SqlTable<?> table,
-                    SquidDatabase database, DBOperation operation, AbstractModel modelValues, long rowId) {
-                return false;
-            }
-        }, TestModel.TABLE, Employee.TABLE);
         testNotifierConstructorsInternal(new SimpleDataChangedNotifier(Arrays.asList(TestModel.TABLE, Employee.TABLE)) {
             @Override
             protected void onDataChanged() {

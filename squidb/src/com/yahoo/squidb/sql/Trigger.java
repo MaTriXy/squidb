@@ -35,9 +35,9 @@ public class Trigger extends DBObject<Trigger> implements SqlStatement {
     private TriggerType triggerType;
     private TriggerEvent triggerEvent;
     private boolean isTemp;
-    private final List<Property<?>> columns = new ArrayList<Property<?>>();
-    private final List<Criterion> criterions = new ArrayList<Criterion>();
-    private final List<TableStatement> statements = new ArrayList<TableStatement>();
+    private final List<Property<?>> columns = new ArrayList<>();
+    private final List<Criterion> criterions = new ArrayList<>();
+    private final List<TableStatement> statements = new ArrayList<>();
 
     private enum TriggerType {
         BEFORE("BEFORE"), AFTER("AFTER"), INSTEAD("INSTEAD OF");
@@ -281,9 +281,14 @@ public class Trigger extends DBObject<Trigger> implements SqlStatement {
     }
 
     @Override
+    @Deprecated
     public CompiledStatement compile(VersionCode sqliteVersion) {
+        return compile(CompileContext.defaultContextForVersionCode(sqliteVersion));
+    }
+
+    public CompiledStatement compile(CompileContext compileContext) {
         // Android's argument binding doesn't handle trigger statements, so we settle for a sanitized sql statement.
-        return new CompiledStatement(toRawSql(sqliteVersion), EMPTY_ARGS, false);
+        return new CompiledStatement(toRawSql(compileContext), EMPTY_ARGS, false);
     }
 
     @Override
@@ -350,7 +355,7 @@ public class Trigger extends DBObject<Trigger> implements SqlStatement {
         builder.sql.append("BEGIN ");
         for (int i = 0; i < statements.size(); i++) {
             // Android's argument binding doesn't handle trigger statements, so we settle for a sanitized sql statement.
-            builder.sql.append(statements.get(i).toRawSql(builder.sqliteVersion)).append("; ");
+            builder.sql.append(statements.get(i).toRawSql(builder.compileContext)).append("; ");
         }
         builder.sql.append("END");
     }

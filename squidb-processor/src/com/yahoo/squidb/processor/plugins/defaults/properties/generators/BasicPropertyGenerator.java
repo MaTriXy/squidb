@@ -12,6 +12,7 @@ import com.yahoo.aptutils.writer.JavaFileWriter;
 import com.yahoo.aptutils.writer.expressions.Expressions;
 import com.yahoo.aptutils.writer.parameters.MethodDeclarationParameters;
 import com.yahoo.squidb.annotations.ColumnSpec;
+import com.yahoo.squidb.annotations.PrimaryKey;
 import com.yahoo.squidb.processor.StringUtils;
 import com.yahoo.squidb.processor.TypeConstants;
 import com.yahoo.squidb.processor.data.ModelSpec;
@@ -72,7 +73,7 @@ public abstract class BasicPropertyGenerator extends PropertyGenerator {
     }
 
     private String getColumnName(ColumnSpec columnDef) {
-        if (columnDef != null && !"".equals(columnDef.name())) {
+        if (columnDef != null && !AptUtils.isEmpty(columnDef.name())) {
             return columnDef.name();
         }
         return camelCasePropertyName;
@@ -83,25 +84,25 @@ public abstract class BasicPropertyGenerator extends PropertyGenerator {
         // Nothing to do
     }
 
-    protected abstract DeclaredTypeName getTypeForGetAndSet();
-
     @Override
     public String getPropertyName() {
         return propertyName;
     }
 
-    @Override
-    public void beforeEmitPropertyDeclaration(JavaFileWriter writer) throws IOException {
-        super.beforeEmitPropertyDeclaration(writer);
-        if (isDeprecated) {
-            writer.writeAnnotation(CoreTypes.DEPRECATED);
-        }
+    /**
+     * @return the name of the underlying column in SQLite to use for this property
+     */
+    public String getColumnName() {
+        return columnName;
     }
 
     @Override
     public void emitPropertyDeclaration(JavaFileWriter writer) throws IOException {
-        List<String> constructorArgs = new ArrayList<String>();
-        constructorArgs.add(TableModelFileWriter.TABLE_NAME);
+        if (isDeprecated) {
+            writer.writeAnnotation(CoreTypes.DEPRECATED);
+        }
+        List<Object> constructorArgs = new ArrayList<>();
+        constructorArgs.add(TableModelFileWriter.TABLE_MODEL_NAME);
         constructorArgs.add("\"" + columnName + "\"");
         String columnDef = getColumnDefinition();
         if (!AptUtils.isEmpty(columnDef)) {
@@ -112,82 +113,175 @@ public abstract class BasicPropertyGenerator extends PropertyGenerator {
                 Expressions.callConstructor(getPropertyType(), constructorArgs), TypeConstants.PUBLIC_STATIC_FINAL);
     }
 
+    /**
+     * @return the default value given by any existing {@link ColumnSpec} definition, or {@link ColumnSpec#DEFAULT_NONE}
+     * if none is set
+     */
     protected String getColumnDefault() {
         return extras != null ? extras.defaultValue() : ColumnSpec.DEFAULT_NONE;
     }
 
+    /**
+     * @return the full column definition for this Property as a SQL string
+     */
     protected String getColumnDefinition() {
-        String toReturn = null;
+        StringBuilder toReturn = new StringBuilder();
         String constraints = extras != null ? extras.constraints() : ColumnSpec.DEFAULT_NONE;
-        if (!ColumnSpec.DEFAULT_NONE.equals(constraints) || !ColumnSpec.DEFAULT_NONE.equals(getColumnDefault())) {
-            toReturn = constraints;
+        if (!ColumnSpec.DEFAULT_NONE.equals(constraints)) {
+            toReturn.append(constraints);
+        }
 
+        if (!ColumnSpec.DEFAULT_NONE.equals(getColumnDefault())) {
             String columnDefaultValue = getColumnDefinitionDefaultValue();
 
-            if (ColumnSpec.DEFAULT_NONE.equals(toReturn)) {
-                toReturn = "DEFAULT " + columnDefaultValue;
-            } else if (!ColumnSpec.DEFAULT_NONE.equals(columnDefaultValue)) {
-                if (!toReturn.toUpperCase().contains("DEFAULT")) {
-                    toReturn += " DEFAULT " + columnDefaultValue;
-                } else {
-                    utils.getMessager().printMessage(Kind.WARNING, "Duplicate default value definitions", field);
-                }
+            if (!toReturn.toString().toUpperCase().contains("DEFAULT")) {
+                toReturn.append(" DEFAULT ").append(columnDefaultValue);
+            } else {
+                utils.getMessager().printMessage(Kind.WARNING, "Duplicate default value definitions", field);
             }
-            toReturn = "\"" + toReturn + "\"";
         }
-        return toReturn;
+
+        if (field != null && field.getAnnotation(PrimaryKey.class) != null) {
+            PrimaryKey primaryKeyAnnotation = field.getAnnotation(PrimaryKey.class);
+            if (!toReturn.toString().toUpperCase().contains("PRIMARY KEY")) {
+                toReturn.append(" PRIMARY KEY ");
+                if (TypeConstants.isIntegerType(getTypeForAccessors()) && primaryKeyAnnotation.autoincrement()) {
+                    toReturn.append("AUTOINCREMENT");
+                }
+            } else {
+                utils.getMessager().printMessage(Kind.WARNING, "Duplicate primary key definition in column constraints."
+                        + " Use the @PrimaryKey annotation instead of declaring the constraint in ColumnSpec.");
+            }
+        }
+
+        String toReturnString = toReturn.toString().trim();
+        if (!AptUtils.isEmpty(toReturnString)) {
+            return "\"" + toReturnString + "\"";
+        }
+        return null;
     }
 
+    /**
+     * @return a string version of the column default to be used in the SQLite column definition
+     */
     protected String getColumnDefinitionDefaultValue() {
         String columnDefault = getColumnDefault();
         return ColumnSpec.DEFAULT_NULL.equals(columnDefault) ? "NULL" : columnDefault;
     }
 
     @Override
-    public void emitGetter(JavaFileWriter writer) throws IOException {
+    public final void emitGetter(JavaFileWriter writer) throws IOException {
         if (isDeprecated) {
             return;
         }
-        MethodDeclarationParameters params = new MethodDeclarationParameters()
-                .setMethodName(getterMethodName())
-                .setModifiers(Modifier.PUBLIC)
-                .setReturnType(getTypeForGetAndSet());
+        MethodDeclarationParameters params = getterMethodParams();
+
+        modelSpec.getPluginBundle().beforeEmitGetter(writer, this, params);
         writer.beginMethodDefinition(params);
-        writeGetterBody(writer);
+        writeGetterBody(writer, params);
         writer.finishMethodDefinition();
+        modelSpec.getPluginBundle().afterEmitGetter(writer, this, params);
     }
 
-    protected String getterMethodName() {
+    @Override
+    public String getterMethodName() {
         return "get" + StringUtils.capitalize(camelCasePropertyName);
     }
 
+    /**
+     * Constructs and returns a MethodDeclarationParameters object that defines the method signature for the property
+     * getter method. Subclasses can override this hook to alter or return different parameters. Some contracts that
+     * should be observed when overriding this hook and creating the MethodDeclarationParameters object:
+     * <ul>
+     * <li>The method name should be the value returned by {@link #getterMethodName()}</li>
+     * <li>The method return type should be the value returned by {@link #getTypeForAccessors()}</li>
+     * </ul>
+     * The best way to keep these contracts when overriding this hook is to first call super.getterMethodParams()
+     * and then modify the object returned from super before returning it.
+     *
+     * @see #writeGetterBody(JavaFileWriter, MethodDeclarationParameters)
+     */
+    protected MethodDeclarationParameters getterMethodParams() {
+        return new MethodDeclarationParameters()
+                .setMethodName(getterMethodName())
+                .setModifiers(Modifier.PUBLIC)
+                .setReturnType(getTypeForAccessors());
+    }
+
+    /**
+     * Subclasses can override this hook to generate a custom method body for the property getter
+     */
+    protected void writeGetterBody(JavaFileWriter writer, MethodDeclarationParameters params) throws IOException {
+        writeGetterBody(writer);
+    }
+
+    /**
+     * Subclasses can override this hook to generate a custom method body for the property getter. This version of the
+     * hook is deprecated, users should use {@link #writeGetterBody(JavaFileWriter, MethodDeclarationParameters)}
+     * instead.
+     */
+    @Deprecated
     protected void writeGetterBody(JavaFileWriter writer) throws IOException {
         writer.writeStatement(Expressions.callMethod("get", propertyName).returnExpr());
     }
 
     @Override
-    public void emitSetter(JavaFileWriter writer) throws IOException {
+    public final void emitSetter(JavaFileWriter writer) throws IOException {
         if (isDeprecated) {
             return;
         }
-        String argName = propertyName.equals(camelCasePropertyName) ? "_" + camelCasePropertyName
-                : camelCasePropertyName;
-        MethodDeclarationParameters params = new MethodDeclarationParameters()
-                .setMethodName(setterMethodName())
-                .setReturnType(modelSpec.getGeneratedClassName())
-                .setModifiers(Modifier.PUBLIC)
-                .setArgumentTypes(getTypeForGetAndSet())
-                .setArgumentNames(argName);
+        MethodDeclarationParameters params = setterMethodParams();
 
+        modelSpec.getPluginBundle().beforeEmitSetter(writer, this, params);
         writer.beginMethodDefinition(params);
-        writeSetterBody(writer, argName);
+        writeSetterBody(writer, params);
         writer.finishMethodDefinition();
+        modelSpec.getPluginBundle().afterEmitSetter(writer, this, params);
     }
 
-    protected String setterMethodName() {
+    @Override
+    public String setterMethodName() {
         return "set" + StringUtils.capitalize(camelCasePropertyName);
     }
 
+    /**
+     * Constructs and returns a MethodDeclarationParameters object that defines the method signature for the property
+     * setter method. Subclasses can override this hook to alter or return different parameters. Some contracts that
+     * should be observed when overriding this hook and creating the MethodDeclarationParameters object:
+     * <ul>
+     * <li>The method name should be the value returned by {@link #setterMethodName()}</li>
+     * <li>The method should typically accept as an argument an object of the type returned by
+     * {@link #getTypeForAccessors()}. This argument would be the value to set</li>
+     * </ul>
+     * The best way to keep these contracts when overriding this hook is to first call super.setterMethodParams()
+     * and then modify the object returned from super before returning it.
+     *
+     * @see #writeSetterBody(JavaFileWriter, MethodDeclarationParameters)
+     */
+    protected MethodDeclarationParameters setterMethodParams() {
+        String argName = propertyName.equals(camelCasePropertyName) ? "_" + camelCasePropertyName
+                : camelCasePropertyName;
+        return new MethodDeclarationParameters()
+                .setMethodName(setterMethodName())
+                .setReturnType(modelSpec.getGeneratedClassName())
+                .setModifiers(Modifier.PUBLIC)
+                .setArgumentTypes(getTypeForAccessors())
+                .setArgumentNames(argName);
+    }
+
+    /**
+     * Subclasses can override this hook to generate a custom method body for the property setter
+     */
+    protected void writeSetterBody(JavaFileWriter writer, MethodDeclarationParameters params) throws IOException {
+        writeSetterBody(writer, params.getArgumentNames().get(0));
+    }
+
+    /**
+     * Subclasses can override this hook to generate a custom method body for the property setter. This version of the
+     * hook is deprecated, users should use {@link #writeGetterBody(JavaFileWriter, MethodDeclarationParameters)}
+     * instead.
+     */
+    @Deprecated
     protected void writeSetterBody(JavaFileWriter writer, String argName) throws IOException {
         writer.writeStatement(Expressions.callMethod("set", propertyName, argName));
         writer.writeStringStatement("return this");
@@ -201,7 +295,7 @@ public abstract class BasicPropertyGenerator extends PropertyGenerator {
         }
 
         String methodToInvoke;
-        List<Object> arguments = new ArrayList<Object>();
+        List<Object> arguments = new ArrayList<>();
         arguments.add(Expressions.callMethodOn(propertyName, "getName"));
         if (ColumnSpec.DEFAULT_NULL.equals(defaultValue)) {
             methodToInvoke = "putNull";
@@ -213,6 +307,9 @@ public abstract class BasicPropertyGenerator extends PropertyGenerator {
         writer.writeStatement(Expressions.callMethodOn(contentValuesName, methodToInvoke, arguments));
     }
 
+    /**
+     * @return a string version of the column default to be used in the model's defaultValues ValuesStorage
+     */
     protected String getContentValuesDefaultValue() {
         return getColumnDefault();
     }

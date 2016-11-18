@@ -37,9 +37,8 @@ import javax.tools.Diagnostic;
  */
 public class ConstantCopyingPlugin extends Plugin {
 
-    private final List<VariableElement> constantElements = new ArrayList<VariableElement>();
-    private final Map<String, List<VariableElement>> innerClassConstants
-            = new HashMap<String, List<VariableElement>>();
+    private final List<VariableElement> constantElements = new ArrayList<>();
+    private final Map<String, List<VariableElement>> innerClassConstants = new HashMap<>();
 
     public ConstantCopyingPlugin(ModelSpec<?> modelSpec, PluginEnvironment pluginEnv) {
         super(modelSpec, pluginEnv);
@@ -54,8 +53,7 @@ public class ConstantCopyingPlugin extends Plugin {
         if (field.getAnnotation(Deprecated.class) != null) {
             return false;
         }
-        Set<Modifier> modifiers = field.getModifiers();
-        if (modifiers.containsAll(TypeConstants.PUBLIC_STATIC_FINAL)) {
+        if (TypeConstants.isVisibleConstant(field)) {
             constantList.add(field);
             return true;
         }
@@ -75,7 +73,7 @@ public class ConstantCopyingPlugin extends Plugin {
                 }
 
                 TypeElement constantClass = (TypeElement) element;
-                List<VariableElement> constantList = new ArrayList<VariableElement>();
+                List<VariableElement> constantList = new ArrayList<>();
                 innerClassConstants.put(constantClass.getSimpleName().toString(), constantList);
 
                 for (Element e : constantClass.getEnclosedElements()) {
@@ -119,7 +117,8 @@ public class ConstantCopyingPlugin extends Plugin {
     }
 
     private void writeConstantField(JavaFileWriter writer, DeclaredTypeName containingClassName,
-            VariableElement constant) throws IOException{
+            VariableElement constant) throws IOException {
+        JavadocPlugin.writeJavadocFromElement(pluginEnv, writer, constant);
         writer.writeFieldDeclaration(
                 utils.getTypeNameFromTypeMirror(constant.asType()),
                 constant.getSimpleName().toString(),

@@ -5,14 +5,12 @@
  */
 package com.yahoo.squidb.sql;
 
-import android.text.format.DateUtils;
-
 import com.yahoo.squidb.data.SquidCursor;
 import com.yahoo.squidb.sql.TableStatement.ConflictAlgorithm;
+import com.yahoo.squidb.test.Constants;
 import com.yahoo.squidb.test.DatabaseTestCase;
 import com.yahoo.squidb.test.TestModel;
 import com.yahoo.squidb.test.Thing;
-import com.yahoo.squidb.utility.VersionCode;
 
 public class InsertTest extends DatabaseTestCase {
 
@@ -28,7 +26,7 @@ public class InsertTest extends DatabaseTestCase {
         thingOne = new Thing()
                 .setFoo("Thing1")
                 .setBar(123)
-                .setBaz(DateUtils.WEEK_IN_MILLIS)
+                .setBaz(Constants.WEEK_IN_MILLIS)
                 .setQux(5.5)
                 .setIsAlive(true);
         database.persist(thingOne);
@@ -60,7 +58,7 @@ public class InsertTest extends DatabaseTestCase {
         // insert into testModels (firstName, lastName) values ('Jack', 'Sparrow');
         Insert insert = Insert.into(TestModel.TABLE).columns(TestModel.FIRST_NAME, TestModel.LAST_NAME).values(fname,
                 lname);
-        CompiledStatement compiled = insert.compile(database.getSqliteVersion());
+        CompiledStatement compiled = insert.compile(database.getCompileContext());
 
         verifyCompiledSqlArgs(compiled, 2, fname, lname);
 
@@ -73,33 +71,33 @@ public class InsertTest extends DatabaseTestCase {
     }
 
     public void testInsertMultipleValues() {
-        if (database.getSqliteVersion().isLessThan(VersionCode.V3_7_11)) {
-            // see testInsertMultipleValuesPreJellybeanThrowsException
-            return;
-        }
+        testForMinVersionCode(Insert.SQLITE_VERSION_MULTI_ROW_INSERT, new Runnable() {
+            @Override
+            public void run() {
+                final String fname1 = "Alan";
+                final String lname1 = "Turing";
+                final String fname2 = "Linus";
+                final String lname2 = "Torvalds";
+                Insert insert = Insert.into(TestModel.TABLE)
+                        .columns(TestModel.FIRST_NAME, TestModel.LAST_NAME)
+                        .values(fname1, lname1)
+                        .values(fname2, lname2);
 
-        final String fname1 = "Alan";
-        final String lname1 = "Turing";
-        final String fname2 = "Linus";
-        final String lname2 = "Torvalds";
-        Insert insert = Insert.into(TestModel.TABLE)
-                .columns(TestModel.FIRST_NAME, TestModel.LAST_NAME)
-                .values(fname1, lname1)
-                .values(fname2, lname2);
+                CompiledStatement compiled = insert.compile(database.getCompileContext());
+                verifyCompiledSqlArgs(compiled, 4, fname1, lname1, fname2, lname2);
 
-        CompiledStatement compiled = insert.compile(database.getSqliteVersion());
-        verifyCompiledSqlArgs(compiled, 4, fname1, lname1, fname2, lname2);
+                assertEquals(3, database.insert(insert));
 
-        assertEquals(3, database.insert(insert));
-
-        Criterion where = TestModel.FIRST_NAME.eq(fname1).and(TestModel.LAST_NAME.eq(lname1));
-        assertNotNull(database.fetchByCriterion(TestModel.class, where, TestModel.PROPERTIES));
-        where = TestModel.FIRST_NAME.eq(fname2).and(TestModel.LAST_NAME.eq(lname2));
-        assertNotNull(database.fetchByCriterion(TestModel.class, where, TestModel.PROPERTIES));
+                Criterion where = TestModel.FIRST_NAME.eq(fname1).and(TestModel.LAST_NAME.eq(lname1));
+                assertNotNull(database.fetchByCriterion(TestModel.class, where, TestModel.PROPERTIES));
+                where = TestModel.FIRST_NAME.eq(fname2).and(TestModel.LAST_NAME.eq(lname2));
+                assertNotNull(database.fetchByCriterion(TestModel.class, where, TestModel.PROPERTIES));
+            }
+        });
     }
 
     public void testInsertMultipleValuesPreJellybeanThrowsException() {
-        if (database.getSqliteVersion().isAtLeast(VersionCode.V3_7_11)) {
+        if (database.getSqliteVersion().isAtLeast(Insert.SQLITE_VERSION_MULTI_ROW_INSERT)) {
             // see testInsertMultipleValues
             return;
         }
@@ -125,7 +123,7 @@ public class InsertTest extends DatabaseTestCase {
         Query query = Query.select(Thing.FOO, Thing.BAR, Thing.IS_ALIVE).from(Thing.TABLE).where(criterion);
         Insert insert = Insert.into(TestModel.TABLE).columns(TestModel.LAST_NAME, TestModel.LUCKY_NUMBER,
                 TestModel.IS_HAPPY).select(query);
-        CompiledStatement compiled = insert.compile(database.getSqliteVersion());
+        CompiledStatement compiled = insert.compile(database.getCompileContext());
 
         verifyCompiledSqlArgs(compiled, 1, pi);
 
@@ -138,7 +136,7 @@ public class InsertTest extends DatabaseTestCase {
     public void testInsertWithDefaultValues() {
         // insert into things default values;
         Insert insert = Insert.into(Thing.TABLE).defaultValues();
-        CompiledStatement compiled = insert.compile(database.getSqliteVersion());
+        CompiledStatement compiled = insert.compile(database.getCompileContext());
 
         verifyCompiledSqlArgs(compiled, 0);
 
@@ -185,7 +183,7 @@ public class InsertTest extends DatabaseTestCase {
                 .onConflict(ConflictAlgorithm.IGNORE)
                 .columns(TestModel.FIRST_NAME, TestModel.LAST_NAME, TestModel.IS_HAPPY, TestModel.LUCKY_NUMBER)
                 .values(fname, lname, isHappy, luckyNumber);
-        CompiledStatement compiled = insert.compile(database.getSqliteVersion());
+        CompiledStatement compiled = insert.compile(database.getCompileContext());
 
         verifyCompiledSqlArgs(compiled, 4, fname, lname, isHappy, luckyNumber);
 
@@ -220,7 +218,7 @@ public class InsertTest extends DatabaseTestCase {
                 .onConflict(ConflictAlgorithm.REPLACE)
                 .columns(TestModel.FIRST_NAME, TestModel.LAST_NAME, TestModel.IS_HAPPY, TestModel.LUCKY_NUMBER)
                 .values(fname, lname, isHappy, luckyNumber);
-        CompiledStatement compiled = insert.compile(database.getSqliteVersion());
+        CompiledStatement compiled = insert.compile(database.getCompileContext());
 
         verifyCompiledSqlArgs(compiled, 4, fname, lname, isHappy, luckyNumber);
 
@@ -245,7 +243,7 @@ public class InsertTest extends DatabaseTestCase {
             public void run() {
                 Insert insert = Insert.into(TestModel.TABLE).columns(TestModel.FIRST_NAME, TestModel.LAST_NAME,
                         TestModel.BIRTHDAY);
-                insert.compile(database.getSqliteVersion());
+                insert.compile(database.getCompileContext());
             }
         }, IllegalStateException.class);
     }
@@ -255,31 +253,32 @@ public class InsertTest extends DatabaseTestCase {
 
             @Override
             public void run() {
-                Insert insert = Insert.into(TestModel.TABLE).values(Integer.valueOf(0xF00), "bar");
-                insert.compile(database.getSqliteVersion());
+                Insert insert = Insert.into(TestModel.TABLE).values(0xF00, "bar");
+                insert.compile(database.getCompileContext());
             }
         }, IllegalStateException.class);
     }
 
     public void testSetsOfValuesOfUnequalSizeThrowsIllegalStateException() {
-        if (database.getSqliteVersion().isLessThan(VersionCode.V3_7_11)) {
-            // see testInsertMultipleValuesPreJellybeanThrowsException
-            return;
-        }
-        testThrowsException(new Runnable() {
-
+        testForMinVersionCode(Insert.SQLITE_VERSION_MULTI_ROW_INSERT, new Runnable() {
             @Override
             public void run() {
-                // insert into testModels (firstName, lastName) values ("Jack", "Sparrow"), ("James", "Bond", 007),
-                // ("Bugs", "Bunny");
-                Object[] values1 = new Object[]{"Jack", "Sparrow"};
-                Object[] values2 = new Object[]{"James", "Bond", Integer.valueOf(007)};
-                Object[] values3 = new Object[]{"Bugs", "Bunny"};
-                Insert insert = Insert.into(TestModel.TABLE).columns(TestModel.FIRST_NAME, TestModel.LAST_NAME)
-                        .values(values1).values(values2).values(values3);
-                insert.compile(database.getSqliteVersion());
+                testThrowsException(new Runnable() {
+
+                    @Override
+                    public void run() {
+                        // insert into testModels (firstName, lastName) values ("Jack", "Sparrow"), ("James", "Bond", 007),
+                        // ("Bugs", "Bunny");
+                        Object[] values1 = new Object[]{"Jack", "Sparrow"};
+                        Object[] values2 = new Object[]{"James", "Bond", Integer.parseInt("007")};
+                        Object[] values3 = new Object[]{"Bugs", "Bunny"};
+                        Insert insert = Insert.into(TestModel.TABLE).columns(TestModel.FIRST_NAME, TestModel.LAST_NAME)
+                                .values(values1).values(values2).values(values3);
+                        insert.compile(database.getCompileContext());
+                    }
+                }, IllegalStateException.class);
             }
-        }, IllegalStateException.class);
+        });
     }
 
     public void testQuerySpecifiedButColumnsMissingThrowsIllegalStateException() {
@@ -292,7 +291,7 @@ public class InsertTest extends DatabaseTestCase {
                         .from(TestModel.TABLE)
                         .where(TestModel.LUCKY_NUMBER.eq(9));
                 Insert insert = Insert.into(TestModel.TABLE).select(query);
-                insert.compile(database.getSqliteVersion());
+                insert.compile(database.getCompileContext());
             }
         }, IllegalStateException.class);
     }
@@ -309,7 +308,7 @@ public class InsertTest extends DatabaseTestCase {
                         .where(TestModel.LUCKY_NUMBER.eq(9));
                 Insert insert = Insert.into(TestModel.TABLE).columns(TestModel.FIRST_NAME, TestModel.LAST_NAME)
                         .select(query);
-                insert.compile(database.getSqliteVersion());
+                insert.compile(database.getCompileContext());
             }
         }, IllegalStateException.class);
     }
@@ -321,7 +320,7 @@ public class InsertTest extends DatabaseTestCase {
             public void run() {
                 // insert into testModels;
                 Insert insert = Insert.into(TestModel.TABLE);
-                insert.compile(database.getSqliteVersion());
+                insert.compile(database.getCompileContext());
             }
         }, IllegalStateException.class);
     }

@@ -5,10 +5,9 @@
  */
 package com.yahoo.squidb.sql;
 
-import android.text.format.DateUtils;
-
 import com.yahoo.squidb.data.SquidCursor;
 import com.yahoo.squidb.sql.Property.IntegerProperty;
+import com.yahoo.squidb.test.Constants;
 import com.yahoo.squidb.test.DatabaseTestCase;
 import com.yahoo.squidb.test.Employee;
 import com.yahoo.squidb.test.TestModel;
@@ -39,19 +38,19 @@ public class TriggerTest extends DatabaseTestCase {
         kevin = new TestModel()
                 .setFirstName("Kevin")
                 .setLastName("Lim")
-                .setBirthday(now - DateUtils.WEEK_IN_MILLIS)
+                .setBirthday(now - Constants.WEEK_IN_MILLIS)
                 .setLuckyNumber(314);
         database.persist(kevin);
         jonathan = new TestModel()
                 .setFirstName("Jonathan")
                 .setLastName("Koren")
-                .setBirthday(now + DateUtils.HOUR_IN_MILLIS)
+                .setBirthday(now + Constants.HOUR_IN_MILLIS)
                 .setLuckyNumber(3);
         database.persist(jonathan);
         scott = new TestModel()
                 .setFirstName("Scott")
                 .setLastName("Serrano")
-                .setBirthday(now - DateUtils.DAY_IN_MILLIS * 2)
+                .setBirthday(now - Constants.DAY_IN_MILLIS * 2)
                 .setLuckyNumber(-5);
         database.persist(scott);
 
@@ -66,7 +65,7 @@ public class TriggerTest extends DatabaseTestCase {
 
         testThrowsException(new Runnable() {
             public void run() {
-                trigger.compile(database.getSqliteVersion());
+                trigger.compile(database.getCompileContext());
             }
         }, IllegalStateException.class);
     }
@@ -77,7 +76,7 @@ public class TriggerTest extends DatabaseTestCase {
 
         testThrowsException(new Runnable() {
             public void run() {
-                trigger.compile(database.getSqliteVersion());
+                trigger.compile(database.getCompileContext());
             }
         }, IllegalStateException.class);
     }
@@ -97,8 +96,8 @@ public class TriggerTest extends DatabaseTestCase {
         TriggerTester test2 = new TriggerTester().setValue1(initialValue);
         database.persist(test1);
         database.persist(test2);
-        final long idTest1 = test1.getId();
-        final long idTest2 = test2.getId();
+        final long idTest1 = test1.getRowId();
+        final long idTest2 = test2.getRowId();
 
         // create trigger set_value2_before before update of value1 on trigger_testers begin
         //      update trigger_testers set value2 = value1 where _id = NEW._id;
@@ -107,7 +106,7 @@ public class TriggerTest extends DatabaseTestCase {
                 .updateOn(TriggerTester.TABLE, TriggerTester.VALUE_1)
                 .perform(Update.table(TriggerTester.TABLE).set(TriggerTester.VALUE_2, TriggerTester.VALUE_1)
                         .where(TriggerTester.ID.eq(Trigger.newValueOf(TriggerTester.ID))));
-        CompiledStatement compiledTrigger = trigger.compile(database.getSqliteVersion());
+        CompiledStatement compiledTrigger = trigger.compile(database.getCompileContext());
 
         verifyCompiledSqlArgs(compiledTrigger, 0);
 
@@ -121,7 +120,7 @@ public class TriggerTest extends DatabaseTestCase {
         // update test2 with compiled statement
         Update update = Update.table(TriggerTester.TABLE).set(TriggerTester.VALUE_1, terminalValue)
                 .where(TriggerTester.ID.eq(idTest2));
-        CompiledStatement compiledUpdate = update.compile(database.getSqliteVersion());
+        CompiledStatement compiledUpdate = update.compile(database.getCompileContext());
         database.tryExecSql(compiledUpdate.sql, compiledUpdate.sqlArgs);
 
         test1 = database.fetch(TriggerTester.class, idTest1, TriggerTester.PROPERTIES);
@@ -140,8 +139,8 @@ public class TriggerTest extends DatabaseTestCase {
         TriggerTester test2 = new TriggerTester().setValue1(initialValue);
         database.persist(test1);
         database.persist(test2);
-        final long idTest1 = test1.getId();
-        final long idTest2 = test2.getId();
+        final long idTest1 = test1.getRowId();
+        final long idTest2 = test2.getRowId();
 
         // create trigger set_value2_after after update of value1 on trigger_testers begin
         //      update trigger_testers set value2 = value1 where _id = NEW._id;
@@ -150,7 +149,7 @@ public class TriggerTest extends DatabaseTestCase {
                 .updateOn(TriggerTester.TABLE, TriggerTester.VALUE_1)
                 .perform(Update.table(TriggerTester.TABLE).set(TriggerTester.VALUE_2, TriggerTester.VALUE_1)
                         .where(TriggerTester.ID.eq(Trigger.newValueOf(TriggerTester.ID))));
-        CompiledStatement compiledTrigger = trigger.compile(database.getSqliteVersion());
+        CompiledStatement compiledTrigger = trigger.compile(database.getCompileContext());
 
         verifyCompiledSqlArgs(compiledTrigger, 0);
 
@@ -164,7 +163,7 @@ public class TriggerTest extends DatabaseTestCase {
         // update test2 with compiled statement
         Update update = Update.table(TriggerTester.TABLE).set(TriggerTester.VALUE_1, terminalValue)
                 .where(TriggerTester.ID.eq(idTest2));
-        CompiledStatement compiledUpdate = update.compile(database.getSqliteVersion());
+        CompiledStatement compiledUpdate = update.compile(database.getCompileContext());
         database.tryExecSql(compiledUpdate.sql, compiledUpdate.sqlArgs);
 
         test1 = database.fetch(TriggerTester.class, idTest1, TriggerTester.PROPERTIES);
@@ -242,7 +241,7 @@ public class TriggerTest extends DatabaseTestCase {
                 .insertOn(Thing.TABLE)
                 .when(Trigger.newValueOf(Thing.BAR).gt(threshold))
                 .perform(insert);
-        CompiledStatement compiledTrigger = trigger.compile(database.getSqliteVersion());
+        CompiledStatement compiledTrigger = trigger.compile(database.getCompileContext());
 
         verifyCompiledSqlArgs(compiledTrigger, 0);
 
@@ -293,21 +292,21 @@ public class TriggerTest extends DatabaseTestCase {
                 .perform(Insert.into(TriggerTester.TABLE).columns(TriggerTester.VALUE_1, TriggerTester.VALUE_2)
                         .values(oldLuckyNumber, newLuckyNumber));
 
-        CompiledStatement compiledLogInsert = logInsertLucky.compile(database.getSqliteVersion());
+        CompiledStatement compiledLogInsert = logInsertLucky.compile(database.getCompileContext());
         verifyCompiledSqlArgs(compiledLogInsert, 0);
 
-        CompiledStatement compiledLogDelete = logDeleteLucky.compile(database.getSqliteVersion());
+        CompiledStatement compiledLogDelete = logDeleteLucky.compile(database.getCompileContext());
         verifyCompiledSqlArgs(compiledLogDelete, 0);
 
-        CompiledStatement compiledLogUpdate = logUpdateLucky.compile(database.getSqliteVersion());
+        CompiledStatement compiledLogUpdate = logUpdateLucky.compile(database.getCompileContext());
         verifyCompiledSqlArgs(compiledLogUpdate, 0);
 
         database.tryExecSql(compiledLogInsert.sql, compiledLogInsert.sqlArgs);
         database.tryExecSql(compiledLogDelete.sql, compiledLogDelete.sqlArgs);
         database.tryExecSql(compiledLogUpdate.sql, compiledLogUpdate.sqlArgs);
 
-        List<Integer> expectedBefore = new ArrayList<Integer>(10);
-        List<Integer> expectedAfter = new ArrayList<Integer>(10);
+        List<Integer> expectedBefore = new ArrayList<>(10);
+        List<Integer> expectedAfter = new ArrayList<>(10);
 
         // insert
         final int randomLuckyNumber = (int) (Math.random() * 1000);
@@ -323,7 +322,7 @@ public class TriggerTest extends DatabaseTestCase {
         // delete
         expectedBefore.add(randomLuckyNumber);
         expectedAfter.add(0);
-        assertTrue(database.delete(TestModel.class, chesterCheetah.getId())); // +1 trigger
+        assertTrue(database.delete(TestModel.class, chesterCheetah.getRowId())); // +1 trigger
 
         // update
         SquidCursor<TestModel> modelCursor = database.query(TestModel.class, Query.select(TestModel.LUCKY_NUMBER)
@@ -342,7 +341,7 @@ public class TriggerTest extends DatabaseTestCase {
         // update testModels set luckyNumber = (luckyNumber + 1);
         Field<Integer> luckyPlusPlus = Field.field("(" + TestModel.LUCKY_NUMBER.getExpression() + " + 1)");
         Update update = Update.table(TestModel.TABLE).set(TestModel.LUCKY_NUMBER, luckyPlusPlus);
-        CompiledStatement compiledUpdate = update.compile(database.getSqliteVersion());
+        CompiledStatement compiledUpdate = update.compile(database.getCompileContext());
 
         database.tryExecSql(compiledUpdate.sql, compiledUpdate.sqlArgs); // +numTestModels triggers
         int expectedTriggers = numTestModels + 2;

@@ -6,7 +6,6 @@
 package com.yahoo.squidb.processor.plugins.defaults.properties;
 
 import com.yahoo.aptutils.model.DeclaredTypeName;
-import com.yahoo.squidb.annotations.ColumnSpec;
 import com.yahoo.squidb.annotations.ViewQuery;
 import com.yahoo.squidb.processor.TypeConstants;
 import com.yahoo.squidb.processor.data.ModelSpec;
@@ -14,9 +13,6 @@ import com.yahoo.squidb.processor.data.ViewModelSpecWrapper;
 import com.yahoo.squidb.processor.plugins.PluginEnvironment;
 import com.yahoo.squidb.processor.plugins.defaults.properties.generators.PropertyGenerator;
 
-import java.util.Set;
-
-import javax.lang.model.element.Modifier;
 import javax.lang.model.element.VariableElement;
 import javax.tools.Diagnostic;
 
@@ -38,17 +34,9 @@ public class ViewModelSpecFieldPlugin extends FieldReferencePlugin {
 
     @Override
     public boolean processVariableElement(VariableElement field, DeclaredTypeName fieldType) {
-        if (field.getAnnotation(Deprecated.class) != null) {
-            return false;
-        }
-        if (field.getAnnotation(ColumnSpec.class) != null) {
-            utils.getMessager().printMessage(Diagnostic.Kind.WARNING,
-                    "ColumnSpec is ignored outside of table models", field);
-        }
-        boolean isViewProperty = TypeConstants.isPropertyType(fieldType);
+        boolean isViewProperty = TypeConstants.isBasicPropertyType(fieldType);
         ViewQuery isViewQuery = field.getAnnotation(ViewQuery.class);
-        Set<Modifier> modifiers = field.getModifiers();
-        if (modifiers.containsAll(TypeConstants.PUBLIC_STATIC_FINAL)) {
+        if (TypeConstants.isVisibleConstant(field)) {
             if (isViewQuery != null) {
                 if (!TypeConstants.QUERY.equals(fieldType)) {
                     utils.getMessager().printMessage(Diagnostic.Kind.ERROR,
@@ -61,10 +49,9 @@ public class ViewModelSpecFieldPlugin extends FieldReferencePlugin {
                     modelSpec.putMetadata(ViewModelSpecWrapper.METADATA_KEY_QUERY_ELEMENT, field);
                 }
                 return true;
-            } else if (isViewProperty) {
-                return tryCreatePropertyGenerator(field, fieldType);
+            } else {
+                return super.processVariableElement(field, fieldType);
             }
-            return false;
         } else if (isViewProperty) {
             utils.getMessager().printMessage(Diagnostic.Kind.ERROR,
                     "View properties must be public static final", field);

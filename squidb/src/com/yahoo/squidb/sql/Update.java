@@ -5,9 +5,8 @@
  */
 package com.yahoo.squidb.sql;
 
-import android.content.ContentValues;
-
 import com.yahoo.squidb.data.AbstractModel;
+import com.yahoo.squidb.data.ValuesStorage;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -22,8 +21,8 @@ public class Update extends TableStatement {
 
     private final SqlTable<?> table;
     private ConflictAlgorithm conflictAlgorithm = ConflictAlgorithm.NONE;
-    private final Map<String, Object> valuesToUpdate = new HashMap<String, Object>();
-    private final List<Criterion> criterions = new ArrayList<Criterion>();
+    private final Map<String, Object> valuesToUpdate = new HashMap<>();
+    private final List<Criterion> criterions = new ArrayList<>();
 
     protected Update(SqlTable<?> table) {
         this.table = table;
@@ -139,7 +138,7 @@ public class Update extends TableStatement {
         if (!template.isModified()) {
             throw new IllegalArgumentException("Template has no values set to use for update");
         }
-        ContentValues setValues = template.getSetValues();
+        ValuesStorage setValues = template.getSetValues();
         for (Entry<String, Object> entry : setValues.valueSet()) {
             valuesToUpdate.put(entry.getKey(), entry.getValue());
         }

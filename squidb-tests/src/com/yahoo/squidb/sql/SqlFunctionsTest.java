@@ -5,14 +5,13 @@
  */
 package com.yahoo.squidb.sql;
 
-import android.text.format.DateUtils;
-
 import com.yahoo.squidb.data.SquidCursor;
 import com.yahoo.squidb.sql.Property.BooleanProperty;
 import com.yahoo.squidb.sql.Property.DoubleProperty;
 import com.yahoo.squidb.sql.Property.IntegerProperty;
 import com.yahoo.squidb.sql.Property.LongProperty;
 import com.yahoo.squidb.sql.Property.StringProperty;
+import com.yahoo.squidb.test.Constants;
 import com.yahoo.squidb.test.DatabaseTestCase;
 import com.yahoo.squidb.test.Employee;
 import com.yahoo.squidb.test.TestModel;
@@ -39,55 +38,55 @@ public class SqlFunctionsTest extends DatabaseTestCase {
         model2 = new TestModel()
                 .setFirstName("Kevin")
                 .setLastName("Lim")
-                .setBirthday(now - DateUtils.WEEK_IN_MILLIS)
+                .setBirthday(now - Constants.WEEK_IN_MILLIS)
                 .setLuckyNumber(0);
         database.persist(model2);
         model3 = new TestModel()
                 .setFirstName("Jonathan")
                 .setLastName("Koren")
-                .setBirthday(now - DateUtils.HOUR_IN_MILLIS);
+                .setBirthday(now - Constants.HOUR_IN_MILLIS);
         database.persist(model3);
     }
 
     public void testUpper() {
         StringProperty upper =
                 StringProperty.fromFunction(Function.upper(TestModel.FIRST_NAME), "upper");
-        TestModel fetch = database.fetch(TestModel.class, model1.getId(), upper);
+        TestModel fetch = database.fetch(TestModel.class, model1.getRowId(), upper);
         assertEquals("SAM", fetch.get(upper));
     }
 
     public void testLower() {
         StringProperty lower =
                 StringProperty.fromFunction(Function.lower(TestModel.LAST_NAME), "lower");
-        TestModel fetch = database.fetch(TestModel.class, model3.getId(), lower);
+        TestModel fetch = database.fetch(TestModel.class, model3.getRowId(), lower);
         assertEquals("koren", fetch.get(lower));
     }
 
     public void testLengthOfString() {
         IntegerProperty length =
                 IntegerProperty.fromFunction(Function.length(TestModel.FIRST_NAME), "length");
-        TestModel fetch = database.fetch(TestModel.class, model2.getId(), length);
+        TestModel fetch = database.fetch(TestModel.class, model2.getRowId(), length);
         assertEquals(5, fetch.get(length).intValue());
     }
 
     public void testLengthOfNumeric() {
         IntegerProperty length =
                 IntegerProperty.fromFunction(Function.length(TestModel.BIRTHDAY), "length");
-        TestModel fetch = database.fetch(TestModel.class, model1.getId(), length);
+        TestModel fetch = database.fetch(TestModel.class, model1.getRowId(), length);
         assertEquals(Long.toString(model1.getBirthday()).length(), fetch.get(length).intValue());
     }
 
     public void testUpperOfLower() {
         StringProperty upperOfLower =
                 StringProperty.fromFunction(Function.upper(Function.lower(TestModel.LAST_NAME)), "upperOfLower");
-        TestModel fetch = database.fetch(TestModel.class, model1.getId(), upperOfLower);
+        TestModel fetch = database.fetch(TestModel.class, model1.getRowId(), upperOfLower);
         assertEquals("BOSLEY", fetch.get(upperOfLower));
     }
 
     public void testLowerOfUpper() {
         StringProperty lowerOfUpper =
                 StringProperty.fromFunction(Function.lower(Function.upper(TestModel.LAST_NAME)), "lowerOfUpper");
-        TestModel fetch = database.fetch(TestModel.class, model1.getId(), lowerOfUpper);
+        TestModel fetch = database.fetch(TestModel.class, model1.getRowId(), lowerOfUpper);
         assertEquals("bosley", fetch.get(lowerOfUpper));
     }
 
@@ -173,7 +172,7 @@ public class SqlFunctionsTest extends DatabaseTestCase {
         int trueStart = offset - 1;
         int end = length == 0 ? model1.getLastName().length() : trueStart + length;
 
-        TestModel model = database.fetch(TestModel.class, model1.getId(), substrProperty);
+        TestModel model = database.fetch(TestModel.class, model1.getRowId(), substrProperty);
         String substrLastName = model.get(substrProperty);
         String expected = model1.getLastName().substring(trueStart, end);
         assertEquals(expected, substrLastName);
@@ -182,12 +181,12 @@ public class SqlFunctionsTest extends DatabaseTestCase {
     public void testStrConcat() {
         Function<String> concat = Function.strConcat(TestModel.FIRST_NAME, TestModel.LAST_NAME);
         StringProperty concatProperty = StringProperty.fromFunction(concat, "concat");
-        TestModel model = database.fetch(TestModel.class, model1.getId(), concatProperty);
+        TestModel model = database.fetch(TestModel.class, model1.getRowId(), concatProperty);
         assertEquals("SamBosley", model.get(concatProperty));
 
         concat = Function.strConcat(TestModel.FIRST_NAME, " ", TestModel.LAST_NAME);
         concatProperty = StringProperty.fromFunction(concat, "concat");
-        model = database.fetch(TestModel.class, model1.getId(), concatProperty);
+        model = database.fetch(TestModel.class, model1.getRowId(), concatProperty);
         assertEquals("Sam Bosley", model.get(concatProperty));
     }
 
@@ -220,7 +219,7 @@ public class SqlFunctionsTest extends DatabaseTestCase {
     }
 
     public void testVariableArgumentsWorkInFunctions() {
-        AtomicReference<String> name = new AtomicReference<String>("Sam");
+        AtomicReference<String> name = new AtomicReference<>("Sam");
         Function<Integer> caseWhen = Function.caseWhen(TestModel.FIRST_NAME.eq(name));
         BooleanProperty nameMatches = BooleanProperty.fromFunction(caseWhen, "nameMatches");
 
@@ -240,7 +239,7 @@ public class SqlFunctionsTest extends DatabaseTestCase {
     }
 
     public void testOrderByFunction() {
-        AtomicReference<String> name = new AtomicReference<String>("Sam");
+        AtomicReference<String> name = new AtomicReference<>("Sam");
         Function<Integer> caseWhen = Function.caseWhen(TestModel.FIRST_NAME.eq(name));
         BooleanProperty nameMatches = BooleanProperty.fromFunction(caseWhen, "nameMatches");
 
@@ -326,7 +325,7 @@ public class SqlFunctionsTest extends DatabaseTestCase {
         SquidCursor<TestModel> cursor = database.query(TestModel.class, Query.select(minId));
         try {
             cursor.moveToFirst();
-            assertEquals(model1.getId(), cursor.get(minId).longValue());
+            assertEquals(model1.getRowId(), cursor.get(minId).longValue());
         } finally {
             cursor.close();
         }
@@ -337,7 +336,7 @@ public class SqlFunctionsTest extends DatabaseTestCase {
         SquidCursor<TestModel> cursor = database.query(TestModel.class, Query.select(maxId));
         try {
             cursor.moveToFirst();
-            assertEquals(model3.getId(), cursor.get(maxId).longValue());
+            assertEquals(model3.getRowId(), cursor.get(maxId).longValue());
         } finally {
             cursor.close();
         }

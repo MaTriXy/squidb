@@ -25,7 +25,7 @@ public final class Query extends TableStatement {
     private ArrayList<Field<?>> fields = null;
     private ArrayList<Criterion> criterions = null;
     private ArrayList<Join> joins = null;
-    private ArrayList<Field<?>> groupBies = null;
+    private ArrayList<Field<?>> groupByFields = null;
     private ArrayList<Criterion> havings = null;
     private ArrayList<CompoundSelect> compoundSelects = null;
     private ArrayList<Order> orders = null;
@@ -40,13 +40,13 @@ public final class Query extends TableStatement {
 
     private Query(List<Field<?>> fields) {
         if (!isEmpty(fields)) {
-            this.fields = new ArrayList<Field<?>>(fields);
+            this.fields = new ArrayList<>(fields);
         }
     }
 
     private Query(Field<?>... fields) {
         if (!isEmpty(fields)) {
-            this.fields = new ArrayList<Field<?>>();
+            this.fields = new ArrayList<>();
             SquidUtilities.addAll(this.fields, fields);
         }
     }
@@ -129,7 +129,7 @@ public final class Query extends TableStatement {
         }
         if (!isEmpty(fields)) {
             if (this.fields == null) {
-                this.fields = new ArrayList<Field<?>>();
+                this.fields = new ArrayList<>();
             }
             SquidUtilities.addAll(this.fields, fields);
             if (selectAllCache != null) {
@@ -152,7 +152,7 @@ public final class Query extends TableStatement {
         }
         if (!isEmpty(fields)) {
             if (this.fields == null) {
-                this.fields = new ArrayList<Field<?>>(fields);
+                this.fields = new ArrayList<>(fields);
             } else {
                 this.fields.addAll(fields);
             }
@@ -195,7 +195,7 @@ public final class Query extends TableStatement {
             return fork().join(joins);
         }
         if (this.joins == null) {
-            this.joins = new ArrayList<Join>();
+            this.joins = new ArrayList<>();
         }
         SquidUtilities.addAll(this.joins, joins);
         if (selectAllCache != null) {
@@ -264,7 +264,7 @@ public final class Query extends TableStatement {
             return fork().where(criterion);
         }
         if (criterions == null) {
-            criterions = new ArrayList<Criterion>();
+            criterions = new ArrayList<>();
         }
         criterions.add(criterion);
         invalidateCompileCache();
@@ -281,10 +281,10 @@ public final class Query extends TableStatement {
         if (immutable) {
             return fork().groupBy(fields);
         }
-        if (this.groupBies == null) {
-            this.groupBies = new ArrayList<Field<?>>();
+        if (this.groupByFields == null) {
+            this.groupByFields = new ArrayList<>();
         }
-        SquidUtilities.addAll(this.groupBies, fields);
+        SquidUtilities.addAll(this.groupByFields, fields);
         invalidateCompileCache();
         return this;
     }
@@ -304,7 +304,7 @@ public final class Query extends TableStatement {
             return fork().having(criterion);
         }
         if (this.havings == null) {
-            this.havings = new ArrayList<Criterion>();
+            this.havings = new ArrayList<>();
         }
         this.havings.add(criterion);
         invalidateCompileCache();
@@ -373,7 +373,7 @@ public final class Query extends TableStatement {
 
     private void addCompoundSelect(CompoundSelect compoundSelect) {
         if (this.compoundSelects == null) {
-            this.compoundSelects = new ArrayList<CompoundSelect>();
+            this.compoundSelects = new ArrayList<>();
         }
         this.compoundSelects.add(compoundSelect);
         invalidateCompileCache();
@@ -390,7 +390,7 @@ public final class Query extends TableStatement {
             return fork().orderBy(orders);
         }
         if (this.orders == null) {
-            this.orders = new ArrayList<Order>();
+            this.orders = new ArrayList<>();
         }
         SquidUtilities.addAll(this.orders, orders);
         invalidateCompileCache();
@@ -571,11 +571,11 @@ public final class Query extends TableStatement {
     }
 
     private void visitGroupByClause(SqlBuilder builder, boolean forSqlValidation) {
-        if (isEmpty(groupBies)) {
+        if (isEmpty(groupByFields)) {
             return;
         }
         builder.sql.append(" GROUP BY");
-        for (Field<?> groupBy : groupBies) {
+        for (Field<?> groupBy : groupByFields) {
             builder.sql.append(" ");
             groupBy.appendQualifiedExpression(builder, forSqlValidation);
             builder.sql.append(",");
@@ -671,7 +671,7 @@ public final class Query extends TableStatement {
         newQuery.table = table;
         newQuery.criterions = forkList(criterions);
         newQuery.joins = forkList(joins);
-        newQuery.groupBies = forkList(groupBies);
+        newQuery.groupByFields = forkList(groupByFields);
         newQuery.compoundSelects = forkList(compoundSelects);
         newQuery.orders = forkList(orders);
         newQuery.havings = forkList(havings);
@@ -694,7 +694,7 @@ public final class Query extends TableStatement {
         if (isEmpty(list)) {
             return null;
         }
-        return new ArrayList<T>(list);
+        return new ArrayList<>(list);
     }
 
     /**
@@ -722,7 +722,7 @@ public final class Query extends TableStatement {
     public List<Field<?>> getFields() {
         if (isEmpty(selectAllCache)) {
             if (selectAllCache == null) {
-                selectAllCache = new ArrayList<Field<?>>();
+                selectAllCache = new ArrayList<>();
             }
             if (!isEmpty(fields)) {
                 selectAllCache.addAll(fields);
@@ -735,7 +735,7 @@ public final class Query extends TableStatement {
                 }
             }
         }
-        return new ArrayList<Field<?>>(selectAllCache);
+        return new ArrayList<>(selectAllCache);
     }
 
 }

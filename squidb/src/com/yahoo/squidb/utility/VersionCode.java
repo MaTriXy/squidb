@@ -5,7 +5,7 @@
  */
 package com.yahoo.squidb.utility;
 
-import android.text.TextUtils;
+import com.yahoo.squidb.sql.SqlUtils;
 
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -15,10 +15,32 @@ import java.util.regex.Pattern;
  */
 public class VersionCode implements Comparable<VersionCode> {
 
+    /**
+     * Deprecated as this version code is unused by any SquiDB SQL feature
+     */
+    @Deprecated
     public static final VersionCode V3_7_4 = new VersionCode(3, 7, 4, 0); // Default on API 14, default minimum
+
+    /**
+     * Deprecated as this version code is only used for checking if multi-row Insert is supported. It is redefined
+     * explicitly in the Insert class so that it is more clear in which context it might be used
+     */
+    @Deprecated
     public static final VersionCode V3_7_11 = new VersionCode(3, 7, 11, 0); // Support for multi-row insert
+
+    /**
+     * Deprecated as this version code is unused by any SquiDB SQL feature
+     */
+    @Deprecated
     public static final VersionCode V3_8_3 = new VersionCode(3, 8, 3, 0); // Support for common table expressions
-    public static final VersionCode LATEST = new VersionCode(3, 9, 2, 0); // Latest version
+
+    /**
+     * This field is deprecated as it is mostly useful in the context of the squidb-sqlite-bindings project. A
+     * VersionCode constant that explicitly represents the SQLite version in that module has been added to the
+     * SQLiteBindingsAdapter class.
+     */
+    @Deprecated
+    public static final VersionCode LATEST = new VersionCode(3, 15, 0, 0); // Latest version
 
     private static final String VERSION_REGEX =
             "^([\\d]+)(?:\\.([\\d]+))?(?:\\.([\\d]+))?(?:\\.([\\d]+))?((?:[\\w\\-\\(\\)]+\\.)*[\\w\\-\\(\\)]+)?";
@@ -140,7 +162,7 @@ public class VersionCode implements Comparable<VersionCode> {
      * @throws IllegalArgumentException if the input cannot be parsed.
      */
     public static VersionCode parse(String versionString) {
-        if (TextUtils.isEmpty(versionString)) {
+        if (SqlUtils.isEmpty(versionString)) {
             throw new IllegalArgumentException("Empty versionString");
         }
 
@@ -221,7 +243,7 @@ public class VersionCode implements Comparable<VersionCode> {
         if (nanoVersion > 0) {
             builder.append('.').append(nanoVersion);
         }
-        if (!TextUtils.isEmpty(trailing)) {
+        if (!SqlUtils.isEmpty(trailing)) {
             builder.append(trailing);
         }
 

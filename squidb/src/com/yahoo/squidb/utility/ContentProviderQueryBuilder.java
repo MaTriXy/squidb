@@ -5,15 +5,13 @@
  */
 package com.yahoo.squidb.utility;
 
-import android.content.ContentProvider;
-import android.text.TextUtils;
-
 import com.yahoo.squidb.sql.Criterion;
 import com.yahoo.squidb.sql.Field;
 import com.yahoo.squidb.sql.Order;
 import com.yahoo.squidb.sql.Property;
 import com.yahoo.squidb.sql.Query;
 import com.yahoo.squidb.sql.SqlTable;
+import com.yahoo.squidb.sql.SqlUtils;
 import com.yahoo.squidb.sql.Table;
 
 import java.util.ArrayList;
@@ -21,10 +19,10 @@ import java.util.List;
 
 /**
  * Helper class for building queries that use raw strings for projection, selection, and sort order. This is
- * particularly useful when these elements are provided by an outside party, e.g. through a
- * {@link ContentProvider#query(android.net.Uri, String[], String, String[], String) ContentProvider query}. Use the
- * set... methods to build its internal state, then call {@link #build(String[], String, String[], String) build} with
- * the raw arguments to construct an appropriate Query.
+ * particularly useful when these elements are provided by an outside party, e.g. through
+ * android.content.ContentProvider.query(Uri, String[], String, String[], String). Use the set... methods to build
+ * its internal state, then call {@link #build(String[], String, String[], String) build} with the raw arguments to
+ * construct an appropriate Query.
  * <p>
  * For maximum protection against SQL injection attacks, clients should do the following:
  * <ul>
@@ -136,11 +134,11 @@ public class ContentProviderQueryBuilder {
      */
     public Query build(String[] projection, String selection, String[] selectionArgs, String sortOrder) {
         Query query = Query.select(computeProjection(projection)).from(dataSource);
-        boolean hasUserSelection = !TextUtils.isEmpty(selection);
+        boolean hasUserSelection = !SqlUtils.isEmpty(selection);
         if (hasUserSelection) {
             query.where(Criterion.fromRawSelection(selection, selectionArgs));
         }
-        if (!TextUtils.isEmpty(sortOrder)) {
+        if (!SqlUtils.isEmpty(sortOrder)) {
             query.orderBy(Order.fromExpression(sortOrder));
         } else if (defaultOrder != null && defaultOrder.length > 0) {
             query.orderBy(defaultOrder);
@@ -169,7 +167,7 @@ public class ContentProviderQueryBuilder {
             }
             if (projectionIn != null && projectionIn.length > 0) {
                 // convert what we're given to Fields
-                projection = new ArrayList<Field<?>>(projectionIn.length);
+                projection = new ArrayList<>(projectionIn.length);
                 for (String expression : projectionIn) {
                     projection.add(Field.field(expression));
                 }
@@ -179,7 +177,7 @@ public class ContentProviderQueryBuilder {
                 projection = projectionMap.getDefaultProjection();
             } else {
                 // convert projection elements, ignoring ones not in the projection map
-                projection = new ArrayList<Field<?>>(projectionIn.length);
+                projection = new ArrayList<>(projectionIn.length);
                 for (String expression : projectionIn) {
                     Field<?> column = projectionMap.get(expression);
                     if (column != null) {

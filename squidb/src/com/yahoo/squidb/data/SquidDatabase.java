@@ -5,25 +5,8 @@
  */
 package com.yahoo.squidb.data;
 
-import android.annotation.SuppressLint;
-import android.annotation.TargetApi;
-import android.content.ContentResolver;
-import android.content.ContentValues;
-import android.content.Context;
-import android.database.Cursor;
-import android.database.sqlite.SQLiteDatabase;
-import android.net.Uri;
-import android.os.Build.VERSION;
-import android.os.Build.VERSION_CODES;
-import android.text.TextUtils;
-import android.util.Log;
-
 import com.yahoo.squidb.Beta;
-import com.yahoo.squidb.data.adapter.DefaultOpenHelperWrapper;
-import com.yahoo.squidb.data.adapter.SQLExceptionWrapper;
-import com.yahoo.squidb.data.adapter.SQLiteDatabaseWrapper;
-import com.yahoo.squidb.data.adapter.SQLiteOpenHelperWrapper;
-import com.yahoo.squidb.data.adapter.SquidTransactionListener;
+import com.yahoo.squidb.sql.CompileContext;
 import com.yahoo.squidb.sql.CompiledStatement;
 import com.yahoo.squidb.sql.Criterion;
 import com.yahoo.squidb.sql.Delete;
@@ -35,15 +18,21 @@ import com.yahoo.squidb.sql.Property.PropertyVisitor;
 import com.yahoo.squidb.sql.Query;
 import com.yahoo.squidb.sql.SqlStatement;
 import com.yahoo.squidb.sql.SqlTable;
+import com.yahoo.squidb.sql.SqlUtils;
 import com.yahoo.squidb.sql.Table;
 import com.yahoo.squidb.sql.TableStatement;
 import com.yahoo.squidb.sql.Update;
 import com.yahoo.squidb.sql.View;
 import com.yahoo.squidb.sql.VirtualTable;
+import com.yahoo.squidb.utility.Logger;
+import com.yahoo.squidb.utility.SquidUtilities;
 import com.yahoo.squidb.utility.VersionCode;
 
+import java.io.File;
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.Deque;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -51,38 +40,26 @@ import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 /**
  * SquidDatabase is a database abstraction which wraps a SQLite database.
  * <p>
  * Use this class to control the lifecycle of your database where you would normally use a
- * {@link android.database.sqlite.SQLiteOpenHelper}. The first call to a read or write operation will open the database.
- * You can close it again using {@link #close()}.
+ * android.database.sqlite.SQLiteOpenHelper. The first call to a read or write operation will open the database.
+ * You can close it again using {@link #close()}. For information about writing migrations or pre-populating a new
+ * database see the {@link #onUpgrade(ISQLiteDatabase, int, int)} and
+ * {@link #onTablesCreated(ISQLiteDatabase)} hooks.
  * <p>
- * SquidDatabase provides typesafe reads and writes using model classes. For example, rather than using rawQuery to
+ * SquidDatabase provides type safe reads and writes using model classes. For example, rather than using rawQuery to
  * get a Cursor, use {@link #query(Class, Query)}.
  * <p>
  * By convention, methods beginning with "try" (e.g. {@link #tryCreateTable(Table) tryCreateTable}) return true
  * if the operation succeeded and false if it failed for any reason. If it fails, there will also be a call to
  * {@link #onError(String, Throwable) onError}.
  * <p>
- * Methods that use String arrays for where clause arguments ({@link #update(String, ContentValues, String, String[])
- * update}, {@link #updateWithOnConflict(String, ContentValues, String, String[], int) updateWithOnConflict}, and
- * {@link #delete(String, String, String[]) delete}) are wrappers around Android's {@link SQLiteDatabase} methods.
- * However, Android's default behavior of binding all arguments as strings can have unexpected bugs, particularly when
- * working with SQLite functions. For example:
  *
- * <pre>
- * select * from t where _id = '1'; // Returns the first row
- * select * from t where abs(_id) = '1'; // Always returns empty set
- * </pre>
- *
- * For this reason, these methods are protected rather than public. You can choose to expose them in your database
- * subclass if you wish, but we recommend that you instead use the typesafe, public, model-bases methods, such as
- * {@link #update(Criterion, TableModel)}, {@link #updateWithOnConflict(Criterion, TableModel,
- * TableStatement.ConflictAlgorithm)}, {@link #delete(Class, long)}, and {@link #deleteWhere(Class, Criterion)}.
- * <p>
  * As a convenience, when calling the {@link #query(Class, Query) query} and {@link #fetchByQuery(Class, Query)
  * fetchByQuery} methods, if the <code>query</code> argument does not have a FROM clause, the table or view to select
  * from will be inferred from the provided <code>modelClass</code> argument (if possible). This allows for invocations
@@ -95,6 +72,14 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
  *
  * By convention, the <code>fetch...</code> methods return a single model instance corresponding to the first record
  * found, or null if no records are found for that particular form of fetch.
+ * <p>
+ * When implementing your own database access methods in your SquidDatabase subclass, you should use
+ * {@link #acquireExclusiveLock()} or {@link #acquireNonExclusiveLock()} to indicate your intent to access the database
+ * connection. The non-exclusive lock simply indicates your intent to use the database, and prevents other threads
+ * from e.g. closing the database while you are still using it. The exclusive lock prevents any other threads from
+ * accessing the database, so should only be used when you want to ensure that your thread is the only one using the
+ * database connection -- it should be used sparingly, if at all. The non-exclusive lock is sufficient for all basic
+ * read/write use cases. See {@link #getDatabase()}.
  */
 public abstract class SquidDatabase {
 
@@ -136,9 +121,9 @@ public abstract class SquidDatabase {
      * and all {@link Index Indexes} from {@link #getIndexes()} will have been created. Any additional database setup
      * should be done here, e.g. creating other views, indexes, triggers, or inserting data.
      *
-     * @param db the {@link SQLiteDatabaseWrapper} being created
+     * @param db the {@link ISQLiteDatabase} being created
      */
-    protected void onTablesCreated(SQLiteDatabaseWrapper db) {
+    protected void onTablesCreated(ISQLiteDatabase db) {
     }
 
     /**
@@ -147,39 +132,68 @@ public abstract class SquidDatabase {
      *
      * <pre>
      * switch(oldVersion) {
+     * boolean result = true;
      * case 1:
-     *     tryAddColumn(MyModel.NEW_COL_1);
+     *     result &amp;= tryAddColumn(MyModel.NEW_COL_1);
      * case 2:
-     *     tryCreateTable(MyNewModel.TABLE);
+     *     result &amp;= tryCreateTable(MyNewModel.TABLE);
+     * }
+     * return result;
      * </pre>
      *
-     * @param db the {@link SQLiteDatabaseWrapper} being upgraded
+     * If this method returns false or throws an exception, a call to
+     * {@link #onMigrationFailed(MigrationFailedException)} is triggered. The default implementation of
+     * onMigrationFailed rethrows the exception. It is highly recommended that you override onMigrationFailed to handle
+     * errors, for example by calling {@link #recreate()} to delete all data in the database and start from scratch.
+     * More sophisticated recovery logic would require a different means of opening the database file.
+     *
+     * @param db the {@link ISQLiteDatabase} being upgraded
      * @param oldVersion the current database version
      * @param newVersion the database version being upgraded to
      * @return true if the upgrade was handled successfully, false otherwise
+     * @see #onMigrationFailed(MigrationFailedException)
      */
-    protected abstract boolean onUpgrade(SQLiteDatabaseWrapper db, int oldVersion, int newVersion);
+    protected abstract boolean onUpgrade(ISQLiteDatabase db, int oldVersion, int newVersion);
 
     /**
-     * Called when the database should be downgraded from one version to another
+     * Called when the database should be downgraded from one version to another. If this method returns false or
+     * throws an exception, a call to {@link #onMigrationFailed(MigrationFailedException)} is triggered. The default
+     * implementation of onMigrationFailed rethrows the exception. It is highly recommended that you override
+     * onMigrationFailed to handle errors, for example by calling {@link #recreate()} to delete all data in the
+     * database and start from scratch. More sophisticated recovery logic would require a different means of opening
+     * the database file.
      *
-     * @param db the {@link SQLiteDatabaseWrapper} being upgraded
+     * @param db the {@link ISQLiteDatabase} being upgraded
      * @param oldVersion the current database version
      * @param newVersion the database version being downgraded to
      * @return true if the downgrade was handled successfully, false otherwise. The default implementation returns true.
+     * @see #onMigrationFailed(MigrationFailedException)
      */
-    protected boolean onDowngrade(SQLiteDatabaseWrapper db, int oldVersion, int newVersion) {
+    protected boolean onDowngrade(ISQLiteDatabase db, int oldVersion, int newVersion) {
         return true;
     }
 
     /**
-     * Called to notify of a failure in {@link #onUpgrade(SQLiteDatabaseWrapper, int, int) onUpgrade()} or
-     * {@link #onDowngrade(SQLiteDatabaseWrapper, int, int) onDowngrade()}, either because it returned false or because
-     * an unexpected exception occurred. Subclasses can take drastic corrective action here, e.g. recreating the
-     * database with {@link #recreate()}. The default implementation throws an exception.
+     * Called to notify of a failure in {@link #onUpgrade(ISQLiteDatabase, int, int) onUpgrade()} or
+     * {@link #onDowngrade(ISQLiteDatabase, int, int) onDowngrade()}, either because it returned false or because
+     * an unexpected exception occurred.
      * <p>
-     * Note that taking no action here leaves the database in whatever state it was in when the error occurred, which
-     * can result in unexpected errors if callers are allowed to invoke further operations on the database.
+     * The default implementation of this method rethrows the MigrationFailedException parameter. Subclasses can take
+     * drastic corrective action here, e.g. recreating the database with {@link #recreate()}. If instead of calling
+     * recreate() you choose to take other corrective action, you should finish by calling
+     * {@link ISQLiteDatabase#setVersion(int)} to reflect that you were able to recover and complete the migration
+     * successfully.
+     * <p>
+     * Calling {@link #getDatabase()} or any other DB access method from within this hook is generally unsafe, as the
+     * database is not open when this hook is called, and attempting to reopen it without correcting the problem may
+     * result in recursion, unless you specifically write your {@link #onUpgrade(ISQLiteDatabase, int, int)}
+     * or {@link #onDowngrade(ISQLiteDatabase, int, int)} logic to handle such cases. ({@link #recreate()} is
+     * still safe however). You also should not suppress this exception without taking any action. If this method
+     * exits without throwing but the database is not open, another exception will be thrown that is likely to cause
+     * a crash.
+     * <p>
+     * Failures to open the database not caused by an error in the migration flow are handled by
+     * the {@link #onDatabaseOpenFailed(RuntimeException, int)} hook.
      *
      * @param failure details about the upgrade or downgrade that failed
      */
@@ -188,34 +202,67 @@ public abstract class SquidDatabase {
     }
 
     /**
+     * Called if the database has failed to open for any reason. Migration failures should be handled by the
+     * {@link #onMigrationFailed(MigrationFailedException)} hook, but if you do not override that method, migration
+     * failures will be forwarded to this hook instead. Non-migration failures that trigger this hook should be rare:
+     * the result of programming errors, disk I/O failures, or corrupt databases. The default implementation of this
+     * hook rethrows the exception, which will likely cause a crash. If you want to implement more sophisticated
+     * failure handling, reasonable actions might be one or both of the following:
+     * <ul>
+     * <li>Call {@link #getDatabase()} to attempt reopening the database. This is a recursive operation, so it will
+     * increment the retryCount argument if opening fails again. You shouldn't let the retry count grow infinitely,
+     * lest you risk stack overflows.</li>
+     * <li>Call {@link #recreate()} to delete the database file and recreate an empty one</li>
+     * </ul>
+     *
+     * @param openFailureCount the number times this hook has been called, if you've called getDatabase() recursively.
+     * The value will be 1 the first time this hook is called, 2 the second time, and so on.
+     * @param failure the exception that caused opening the database to fail
+     */
+    @Beta
+    protected void onDatabaseOpenFailed(RuntimeException failure, int openFailureCount) {
+        throw failure;
+    }
+
+    /**
      * Called when the database connection is being configured, to enable features such as write-ahead logging or
      * foreign key support.
      *
      * This method may be called at different points in the database lifecycle depending on the environment. When using
-     * a custom SQLite build with the squidb-sqlite-bindings project, or when running on Android API >= 16, it is
-     * called before {@link #onTablesCreated(SQLiteDatabaseWrapper) onTablesCreated},
-     * {@link #onUpgrade(SQLiteDatabaseWrapper, int, int) onUpgrade},
-     * {@link #onDowngrade(SQLiteDatabaseWrapper, int, int) onDowngrade},
-     * and {@link #onOpen(SQLiteDatabaseWrapper) onOpen}. If it is running on stock Android SQLite and API < 16, it
+     * a custom SQLite build with the squidb-sqlite-bindings project, or when running on Android API &gt;= 16, it is
+     * called before {@link #onTablesCreated(ISQLiteDatabase) onTablesCreated},
+     * {@link #onUpgrade(ISQLiteDatabase, int, int) onUpgrade},
+     * {@link #onDowngrade(ISQLiteDatabase, int, int) onDowngrade},
+     * and {@link #onOpen(ISQLiteDatabase) onOpen}. If it is running on stock Android SQLite and API &lt; 16, it
      * is called immediately before onOpen but after the other callbacks. The discrepancy is because onConfigure was
      * only introduced as a callback in API 16, but the ordering should not matter much for most use cases.
      * <p>
-     * This method should only call methods that configure the parameters of the database connection, such as
-     * {@link SQLiteDatabaseWrapper#enableWriteAheadLogging}, {@link SQLiteDatabaseWrapper#setForeignKeyConstraintsEnabled},
-     * {@link SQLiteDatabaseWrapper#setLocale}, {@link SQLiteDatabaseWrapper#setMaximumSize}, or executing PRAGMA statements.
      *
-     * @param db the {@link SQLiteDatabaseWrapper} being configured
+     * This method should only call methods that configure the parameters of the database connection, such as
+     * {@link ISQLiteDatabase#enableWriteAheadLogging}, {@link ISQLiteDatabase#setForeignKeyConstraintsEnabled},
+     * {@link ISQLiteDatabase#setMaximumSize}, or executing PRAGMA statements.
+     *
+     * @param db the {@link ISQLiteDatabase} being configured
      */
-    protected void onConfigure(SQLiteDatabaseWrapper db) {
+    protected void onConfigure(ISQLiteDatabase db) {
     }
 
     /**
      * Called when the database has been opened. This method is called after the database connection has been
      * configured and after the database schema has been created, upgraded, or downgraded as necessary.
      *
-     * @param db the {@link SQLiteDatabaseWrapper} being opened
+     * @param db the {@link ISQLiteDatabase} being opened
      */
-    protected void onOpen(SQLiteDatabaseWrapper db) {
+    protected void onOpen(ISQLiteDatabase db) {
+    }
+
+    /**
+     * Called when the database is about to be closed. This method is called immediately before the database is closed,
+     * so the ISQLiteDatabase parameter is still valid to use for executing any cleanup SQL that might be necessary.
+     *
+     * @param db the {@link ISQLiteDatabase} that is about to close
+     */
+    protected void onClose(ISQLiteDatabase db) {
     }
 
     /**
@@ -226,28 +273,32 @@ public abstract class SquidDatabase {
      * @param error the error that was encountered
      */
     protected void onError(String message, Throwable error) {
-        Log.w(getClass().getSimpleName(), message, error);
+        Logger.e(Logger.LOG_TAG, getClass().getSimpleName() + " -- " + message, error);
     }
 
     // --- internal implementation
 
     private static final int STRING_BUILDER_INITIAL_CAPACITY = 128;
 
-    private final Context context;
+    private Set<ISQLitePreparedStatement> trackedPreparedInserts = Collections.newSetFromMap(
+            new ConcurrentHashMap<ISQLitePreparedStatement, Boolean>());
+    private ThreadLocal<PreparedInsertCache> preparedInsertCache = newPreparedInsertCache(trackedPreparedInserts);
+    private boolean preparedInsertCacheEnabled = false;
 
     private SquidDatabase attachedTo = null;
     private final ReentrantReadWriteLock readWriteLock = new ReentrantReadWriteLock();
+    private final Object databaseInstanceLock = new Object();
 
     /**
      * SQLiteOpenHelperWrapper that takes care of database operations
      */
-    private SQLiteOpenHelperWrapper helper = null;
+    private ISQLiteOpenHelper helper = null;
 
     /**
      * Internal pointer to open database. Hides the fact that there is a database and a wrapper by making a single
      * monolithic interface
      */
-    private SQLiteDatabaseWrapper database = null;
+    private ISQLiteDatabase database = null;
 
     /**
      * Cached version code
@@ -257,25 +308,16 @@ public abstract class SquidDatabase {
     /**
      * Map of class objects to corresponding tables
      */
-    private Map<Class<? extends AbstractModel>, SqlTable<?>> tableMap;
+    private Map<Class<? extends AbstractModel>, SqlTable<?>> tableMap = new HashMap<>();
 
-    private boolean isInMigration;
+    private boolean isInMigration = false;
+    private boolean isInMigrationFailedHook = false;
+    private int databaseOpenFailedRetryCount = 0;
 
     /**
      * Create a new SquidDatabase
-     *
-     * @param context the Context, must not be null
      */
-    public SquidDatabase(Context context) {
-        if (context == null) {
-            throw new NullPointerException("Null context creating SquidDatabase");
-        }
-        this.context = context.getApplicationContext();
-        initializeTableMap();
-    }
-
-    private void initializeTableMap() {
-        tableMap = new HashMap<Class<? extends AbstractModel>, SqlTable<?>>();
+    public SquidDatabase() {
         registerTableModels(getTables());
         registerTableModels(getViews());
     }
@@ -290,11 +332,33 @@ public abstract class SquidDatabase {
         }
     }
 
+    private synchronized ISQLiteOpenHelper getOpenHelper() {
+        if (helper == null) {
+            helper = createOpenHelper(getName(), new OpenHelperDelegate(), getVersion());
+        }
+        return helper;
+    }
+
+    /**
+     * Subclasses of SquidDatabase override this method to create an {@link ISQLiteOpenHelper} suitable for the current
+     * platform. For example, if the library is being used only on Android, you can simply return a new
+     * AndroidOpenHelper instance. If on the other hand the library is being used on Android and iOS via j2objc,
+     * you will need to define logic for instantiating the appropriate open helper -- AndroidOpenHelper from the
+     * squidb-android module when on Android, or IOSOpenHelper from the squidb-ios module when on iOS.
+     *
+     * @param databaseName the name of the database being created/opened
+     * @param delegate a delegate object for database lifecycle callbacks
+     * @param version the current database version
+     * @return an object suitable for the current platform that implements the {@link ISQLiteOpenHelper} interface
+     */
+    protected abstract ISQLiteOpenHelper createOpenHelper(String databaseName,
+            OpenHelperDelegate delegate, int version);
+
     /**
      * @return the path to the underlying database file.
      */
     public String getDatabasePath() {
-        return context.getDatabasePath(getName()).getAbsolutePath();
+        return getOpenHelper().getDatabasePath();
     }
 
     /**
@@ -330,12 +394,12 @@ public abstract class SquidDatabase {
 
     /**
      * Gets the underlying SQLiteDatabaseWrapper instance. Most users should not need to call this. If you call this
-     * from your AbstractDatabase subclass with the intention of executing SQL, you should wrap the calls with a lock,
+     * from your SquidDatabase subclass with the intention of executing SQL, you should wrap the calls with a lock,
      * probably the non-exclusive one:
      *
      * <pre>
      * public void execSql(String sql) {
-     *     aquireNonExclusiveLock();
+     *     acquireNonExclusiveLock();
      *     try {
      *         getDatabase().execSQL(sql);
      *     } finally {
@@ -346,15 +410,92 @@ public abstract class SquidDatabase {
      *
      * You only need to acquire the exclusive lock if you truly need exclusive access to the database connection.
      *
-     * @return the underlying {@link SQLiteDatabaseWrapper}, which will be opened if it is not yet opened
+     * @return the underlying {@link ISQLiteDatabase}, which will be opened if it is not yet opened
      * @see #acquireExclusiveLock()
      * @see #acquireNonExclusiveLock()
      */
-    protected synchronized final SQLiteDatabaseWrapper getDatabase() {
-        if (database == null) {
-            openForWriting();
+    protected final ISQLiteDatabase getDatabase() {
+        // If we get here, we should already have the non-exclusive lock
+        synchronized (databaseInstanceLock) {
+            if (database == null) {
+                openForWritingLocked();
+            }
+            return database;
         }
-        return database;
+    }
+
+    private void openForWritingLocked() {
+        boolean areDataChangedNotificationsEnabled = areDataChangedNotificationsEnabled();
+        setDataChangedNotificationsEnabled(false);
+        try {
+            try {
+                ISQLiteDatabase db = getOpenHelper().openForWriting();
+                setDatabase(db);
+            } catch (RecreateDuringMigrationException recreate) {
+                recreateLocked();
+            } catch (MigrationFailedException fail) {
+                onError(fail.getMessage(), fail);
+                isInMigrationFailedHook = true;
+                try {
+                    // We don't want to be holding on to an invalid DB instance here
+                    if (!isOpen()) {
+                        closeLocked();
+                    }
+                    onMigrationFailed(fail);
+                } finally {
+                    isInMigrationFailedHook = false;
+                }
+            }
+            if (!isOpen()) {
+                closeLocked();
+                throw new RuntimeException("Failed to open database");
+            }
+        } catch (RuntimeException e) {
+            onError("Failed to open database: " + getName(), e);
+
+            // If any runtime exception occurs, make sure we aren't holding on to a partially open DB instance.
+            // It would be invalid if the exception were suppressed accidentally
+            closeLocked();
+
+            int retryCount = ++databaseOpenFailedRetryCount;
+            try {
+                onDatabaseOpenFailed(e, retryCount);
+                // If this hook exits cleanly but the db still isn't open, the user probably did something bad in
+                // the hook, so we should clean up and rethrow
+                if (!isOpen()) {
+                    closeLocked();
+                    throw e;
+                }
+            } finally {
+                databaseOpenFailedRetryCount = 0;
+            }
+        } finally {
+            setDataChangedNotificationsEnabled(areDataChangedNotificationsEnabled);
+        }
+    }
+
+    /**
+     * Enables or disables the prepared insert cache. Generally speaking, enabling this cache will result in a
+     * performance improvement when inserting rows, especially in large transactions. Under ideal conditions,
+     * performance may be improved up to 70%, and a 25-50% gain is a reasonable expectation for most cases. However,
+     * the gains may not be noticeable on some older devices or in low-memory environments. The feature is experimental
+     * and is disabled by default.
+     *
+     * @param enabled true to enable the prepared insert cache, false to disable it
+     */
+    @Beta
+    protected void setPreparedInsertCacheEnabled(boolean enabled) {
+        preparedInsertCacheEnabled = enabled;
+    }
+
+    private ThreadLocal<PreparedInsertCache> newPreparedInsertCache(
+            final Set<ISQLitePreparedStatement> openStatementTracking) {
+        return new ThreadLocal<PreparedInsertCache>() {
+            @Override
+            protected PreparedInsertCache initialValue() {
+                return new PreparedInsertCache(openStatementTracking);
+            }
+        };
     }
 
     /**
@@ -376,10 +517,8 @@ public abstract class SquidDatabase {
      * @throws IllegalStateException if this database is already attached to another database
      * @throws IllegalArgumentException if the other database is already attached to another database
      * @throws IllegalStateException if either database has an open transaction on the current thread
-     * @see SQLiteDatabase#enableWriteAheadLogging()
      */
     @Beta
-    @TargetApi(VERSION_CODES.JELLY_BEAN)
     public final String attachDatabase(SquidDatabase other) {
         if (attachedTo != null) {
             throw new IllegalStateException("Can't attach a database to a database that is itself attached");
@@ -388,18 +527,13 @@ public abstract class SquidDatabase {
             throw new IllegalStateException("Can't attach a database while in a transaction on the current thread");
         }
 
-        boolean walEnabled = (VERSION.SDK_INT >= VERSION_CODES.JELLY_BEAN)
-                && getDatabase().isWriteAheadLoggingEnabled();
-        if (walEnabled) {
-            // need to wait for transactions to finish
-            acquireExclusiveLock();
-        }
+        // Some platforms need to wait for transactions to finish,
+        // so we acquire an exclusive lock before attaching
+        acquireExclusiveLock();
         try {
             return other.attachTo(this);
         } finally {
-            if (walEnabled) {
-                releaseExclusiveLock();
-            }
+            releaseExclusiveLock();
         }
     }
 
@@ -454,94 +588,124 @@ public abstract class SquidDatabase {
     }
 
     /**
-     * Open the database for writing.
+     * @return true if a connection to the {@link ISQLiteDatabase} is open, false otherwise
      */
-    private void openForWriting() {
-        initializeHelper();
+    public final boolean isOpen() {
+        synchronized (databaseInstanceLock) {
+            return database != null && database.isOpen();
+        }
+    }
 
-        boolean performRecreate = false;
+    /**
+     * Close the database if it has been opened previously. This method acquires the exclusive lock before closing the
+     * db -- it will block if other threads are in transactions. This method will throw an exception if called from
+     * within a transaction.
+     * <p>
+     * It is not safe to call this method from within any of the database open or migration hooks (e.g.
+     * {@link #onUpgrade(ISQLiteDatabase, int, int)}, {@link #onOpen(ISQLiteDatabase)},
+     * {@link #onMigrationFailed(MigrationFailedException)}), etc.
+     * <p>
+     * WARNING: Any open database resources (e.g. cursors) will be invalid after calling this method. Do not call this
+     * method if any open cursors may be in use.
+     */
+    public final void close() {
+        acquireExclusiveLock();
         try {
-            setDatabase(helper.openForWriting());
-        } catch (RecreateDuringMigrationException recreate) {
-            performRecreate = true;
-        } catch (MigrationFailedException fail) {
-            onError(fail.getMessage(), fail);
-            onMigrationFailed(fail);
-        } catch (RuntimeException e) {
-            onError("Failed to open database: " + getName(), e);
-            throw e;
-        }
-
-        if (performRecreate) {
-            recreate();
-        }
-    }
-
-    private void initializeHelper() {
-        if (helper == null) {
-            helper = getOpenHelper(context, getName(), new OpenHelperDelegate(), getVersion());
+            closeLocked();
+        } finally {
+            releaseExclusiveLock();
         }
     }
 
     /**
-     * Subclasses can override this method to enable connecting to a different version of SQLite than the default
-     * version shipped with Android. For example, the squidb-sqlite-bindings project provides a class
-     * SQLiteBindingsDatabaseOpenHelper to facilitate binding to a custom native build of SQLite. Overriders of this
-     * method could simply <code>return new SQLiteBindingsDatabaseOpenHelper(context, databaseName, delegate, version);</code>
-     * if they wanted to bypass Android's version of SQLite and use the version included with that project.
+     * Clear all data in the database. This method acquires the exclusive lock before closing the db -- it will block
+     * if other threads are in transactions. This method will throw an exception if called from within a transaction.
      * <p>
-     * If you don't override this method, the stock Android SQLite build will be used. This is generally fine unless you
-     * have a specific reason to prefer some other version of SQLite.
+     * It is not safe to call this method from within any of the database open or migration hooks (e.g.
+     * {@link #onUpgrade(ISQLiteDatabase, int, int)}, {@link #onOpen(ISQLiteDatabase)},
+     * {@link #onMigrationFailed(MigrationFailedException)}), etc.
+     * <p>
+     * WARNING: Any open database resources (e.g. cursors) will be invalid after calling this method. Do not call this
+     * method if any open cursors may be in use. The existing database file will be deleted and all data will be lost.
      */
-    protected SQLiteOpenHelperWrapper getOpenHelper(Context context, String databaseName,
-            OpenHelperDelegate delegate, int version) {
-        return new DefaultOpenHelperWrapper(context, databaseName, delegate, version);
-    }
-
-    /**
-     * @return true if a connection to the {@link SQLiteDatabase} is open, false otherwise
-     */
-    public synchronized final boolean isOpen() {
-        return database != null && database.isOpen();
-    }
-
-    /**
-     * Close the database if it has been opened previously
-     */
-    public synchronized final void close() {
-        if (isOpen()) {
-            database.close();
+    public final void clear() {
+        acquireExclusiveLock();
+        try {
+            closeAndDeleteLocked();
+        } finally {
+            releaseExclusiveLock();
         }
-        helper = null;
-        setDatabase(null);
     }
 
     /**
-     * Clear all data in the database.
+     * Clears the database and recreates an empty version of it. This method acquires the exclusive lock before closing
+     * the db -- it will block if other threads are in transactions. This method will throw an exception if called from
+     * within a transaction.
      * <p>
-     * WARNING: Any open database resources will be abruptly closed. Do not call this method if other threads may be
-     * accessing the database. The existing database file will be deleted and all data will be lost.
-     */
-    public synchronized final void clear() {
-        close();
-        context.deleteDatabase(getName());
-    }
-
-    /**
-     * Clears the database and recreates an empty version of it.
+     * If called from within the {@link #onUpgrade(ISQLiteDatabase, int, int)} or
+     * {@link #onDowngrade(ISQLiteDatabase, int, int)} hooks, this method will abort the remainder of the
+     * migration and simply clear the database. This method is also safe to call from within
+     * {@link #onMigrationFailed(MigrationFailedException)}
      * <p>
-     * WARNING: Any open connections to the database will be abruptly closed. Do not call this method if other threads
-     * may be accessing the database.
+     * WARNING: Any open database resources (e.g. cursors) will be invalid after calling this method. Do not call this
+     * method if any open cursors may be in use. The existing database file will be deleted and all data will be lost,
+     * with a new empty database taking its place.
      *
      * @see #clear()
      */
-    public synchronized final void recreate() {
+    public final void recreate() {
         if (isInMigration) {
             throw new RecreateDuringMigrationException();
+        } else if (isInMigrationFailedHook || databaseOpenFailedRetryCount > 0) {
+            recreateLocked(); // Safe to call here, necessary locks are already held in this case
         } else {
-            clear();
+            acquireExclusiveLock();
+            try {
+                recreateLocked();
+            } finally {
+                releaseExclusiveLock();
+            }
+        }
+    }
+
+    private void recreateLocked() {
+        synchronized (databaseInstanceLock) {
+            closeAndDeleteLocked();
             getDatabase();
         }
+    }
+
+    private void closeLocked() {
+        synchronized (databaseInstanceLock) {
+            closeAndDeleteInternal(false);
+        }
+    }
+
+    private void closeAndDeleteLocked() {
+        synchronized (databaseInstanceLock) {
+            closeAndDeleteInternal(true);
+        }
+    }
+
+    private void closeAndDeleteInternal(boolean deleteAfterClose) {
+        clearPreparedStatementCache();
+        if (isOpen()) {
+            onClose(database);
+            database.close();
+        }
+        setDatabase(null);
+        if (deleteAfterClose) {
+            getOpenHelper().deleteDatabase();
+        }
+        helper = null;
+    }
+
+    private void clearPreparedStatementCache() {
+        for (ISQLitePreparedStatement statement : trackedPreparedInserts) {
+            statement.close();
+        }
+        trackedPreparedInserts.clear();
+        preparedInsertCache = newPreparedInsertCache(trackedPreparedInserts);
     }
 
     /**
@@ -555,7 +719,7 @@ public abstract class SquidDatabase {
     // --- database wrapper
 
     /**
-     * Execute a raw sqlite query. This method takes an Object[] for the arguments because Android's default behavior
+     * Execute a raw SQLite query. This method takes an Object[] for the arguments because Android's default behavior
      * of binding all arguments as strings can have unexpected bugs, particularly when working with functions. For
      * example:
      *
@@ -570,9 +734,9 @@ public abstract class SquidDatabase {
      *
      * @param sql a sql statement
      * @param sqlArgs arguments to bind to the sql statement
-     * @return a {@link Cursor} containing results of the query
+     * @return a {@link ICursor} containing results of the query
      */
-    public Cursor rawQuery(String sql, Object[] sqlArgs) {
+    public ICursor rawQuery(String sql, Object[] sqlArgs) {
         acquireNonExclusiveLock();
         try {
             return getDatabase().rawQuery(sql, sqlArgs);
@@ -581,51 +745,70 @@ public abstract class SquidDatabase {
         }
     }
 
-    // For use only when validating queries
-    private void compileStatement(String sql) {
+    /**
+     * Execute a statement that returns a 1x1 String result. If you know your result set will only have one row and
+     * column, this is much more efficient than calling {@link #rawQuery(String, Object[])} and parsing the cursor.
+     * <br>
+     * Note: This will throw an exception if the given SQL query returns a result that is not a single column
+     *
+     * @param sql a sql statement
+     * @param sqlArgs arguments to bind to the sql statement
+     * @return the String result of the query
+     */
+    public String simpleQueryForString(String sql, Object[] sqlArgs) {
         acquireNonExclusiveLock();
         try {
-            getDatabase().ensureSqlCompiles(sql);
+            return getDatabase().simpleQueryForString(sql, sqlArgs);
         } finally {
             releaseNonExclusiveLock();
         }
     }
 
     /**
-     * @see SQLiteDatabase#insert(String table, String nullColumnHack, ContentValues values)
+     * Execute a statement that returns a 1x1 long result. If you know your result set will only have one row and
+     * column, this is much more efficient than calling {@link #rawQuery(String, Object[])} and parsing the cursor.
+     * <br>
+     * Note: This will throw an exception if the given SQL query returns a result that is not a single column
+     *
+     * @param sql a sql statement
+     * @param sqlArgs arguments to bind to the sql statement
+     * @return the long result of the query
      */
-    protected long insert(String table, String nullColumnHack, ContentValues values) {
+    public long simpleQueryForLong(String sql, Object[] sqlArgs) {
         acquireNonExclusiveLock();
         try {
-            return getDatabase().insert(table, nullColumnHack, values);
+            return getDatabase().simpleQueryForLong(sql, sqlArgs);
         } finally {
             releaseNonExclusiveLock();
         }
     }
 
     /**
-     * @see SQLiteDatabase#insertOrThrow(String table, String nullColumnHack, ContentValues values)
+     * Execute a statement that returns a 1x1 String result. If you know your result set will only have one row and
+     * column, this is much more efficient than calling {@link #rawQuery(String, Object[])} and parsing the cursor.
+     * <br>
+     * Note: This will throw an exception if the given SQL query returns a result that is not a single column
+     *
+     * @param query a sql query
+     * @return the String result of the query
      */
-    protected long insertOrThrow(String table, String nullColumnHack, ContentValues values) {
-        acquireNonExclusiveLock();
-        try {
-            return getDatabase().insertOrThrow(table, nullColumnHack, values);
-        } finally {
-            releaseNonExclusiveLock();
-        }
+    public String simpleQueryForString(Query query) {
+        CompiledStatement compiled = query.compile(getCompileContext());
+        return simpleQueryForString(compiled.sql, compiled.sqlArgs);
     }
 
     /**
-     * @see SQLiteDatabase#insertWithOnConflict(String, String, android.content.ContentValues, int)
+     * Execute a statement that returns a 1x1 long result. If you know your result set will only have one row and
+     * column, this is much more efficient than calling {@link #rawQuery(String, Object[])} and parsing the cursor.
+     * <br>
+     * Note: This will throw an exception if the given SQL query returns a result that is not a single column
+     *
+     * @param query a sql query
+     * @return the long result of the query
      */
-    protected long insertWithOnConflict(String table, String nullColumnHack, ContentValues values,
-            int conflictAlgorithm) {
-        acquireNonExclusiveLock();
-        try {
-            return getDatabase().insertWithOnConflict(table, nullColumnHack, values, conflictAlgorithm);
-        } finally {
-            releaseNonExclusiveLock();
-        }
+    public long simpleQueryForLong(Query query) {
+        CompiledStatement compiled = query.compile(getCompileContext());
+        return simpleQueryForLong(compiled.sql, compiled.sqlArgs);
     }
 
     /**
@@ -634,24 +817,10 @@ public abstract class SquidDatabase {
      * @return the row id of the last row inserted on success, -1 on failure
      */
     private long insertInternal(Insert insert) {
-        CompiledStatement compiled = insert.compile(getSqliteVersion());
+        CompiledStatement compiled = insert.compile(getCompileContext());
         acquireNonExclusiveLock();
         try {
             return getDatabase().executeInsert(compiled.sql, compiled.sqlArgs);
-        } finally {
-            releaseNonExclusiveLock();
-        }
-    }
-
-    /**
-     * See the note at the top of this file about the potential bugs when using String[] whereArgs
-     *
-     * @see SQLiteDatabase#delete(String, String, String[])
-     */
-    protected int delete(String table, String whereClause, String[] whereArgs) {
-        acquireNonExclusiveLock();
-        try {
-            return getDatabase().delete(table, whereClause, whereArgs);
         } finally {
             releaseNonExclusiveLock();
         }
@@ -663,40 +832,10 @@ public abstract class SquidDatabase {
      * @return the number of rows deleted on success, -1 on failure
      */
     private int deleteInternal(Delete delete) {
-        CompiledStatement compiled = delete.compile(getSqliteVersion());
+        CompiledStatement compiled = delete.compile(getCompileContext());
         acquireNonExclusiveLock();
         try {
             return getDatabase().executeUpdateDelete(compiled.sql, compiled.sqlArgs);
-        } finally {
-            releaseNonExclusiveLock();
-        }
-    }
-
-    /**
-     * See the note at the top of this file about the potential bugs when using String[] whereArgs
-     *
-     * @see SQLiteDatabase#update(String table, ContentValues values, String whereClause, String[] whereArgs)
-     */
-    protected int update(String table, ContentValues values, String whereClause, String[] whereArgs) {
-        acquireNonExclusiveLock();
-        try {
-            return getDatabase().update(table, values, whereClause, whereArgs);
-        } finally {
-            releaseNonExclusiveLock();
-        }
-    }
-
-    /**
-     * See the note at the top of this file about the potential bugs when using String[] whereArgs
-     *
-     * @see SQLiteDatabase#updateWithOnConflict(String table, ContentValues values, String whereClause, String[]
-     * whereArgs, int conflictAlgorithm)
-     */
-    protected int updateWithOnConflict(String table, ContentValues values, String whereClause, String[] whereArgs,
-            int conflictAlgorithm) {
-        acquireNonExclusiveLock();
-        try {
-            return getDatabase().updateWithOnConflict(table, values, whereClause, whereArgs, conflictAlgorithm);
         } finally {
             releaseNonExclusiveLock();
         }
@@ -708,7 +847,7 @@ public abstract class SquidDatabase {
      * @return the number of rows updated on success, -1 on failure
      */
     private int updateInternal(Update update) {
-        CompiledStatement compiled = update.compile(getSqliteVersion());
+        CompiledStatement compiled = update.compile(getCompileContext());
         acquireNonExclusiveLock();
         try {
             return getDatabase().executeUpdateDelete(compiled.sql, compiled.sqlArgs);
@@ -720,59 +859,167 @@ public abstract class SquidDatabase {
     // --- transaction management
 
     /**
-     * Begin a transaction. This acquires a non-exclusive lock.
+     * Begin a transaction in EXCLUSIVE mode. Other reader and writer threads will not be able to access the database
+     * (i.e. will block) while this transaction is active.
+     * <p>
+     * As with Android's SQLiteDatabase, transactions can be nested. If any inner transaction is not marked as
+     * successful, the entire outer transaction is considered to have failed and will be rolled back. Otherwise all
+     * changes will be committed.
+     * <p>
+     * This method acquires the SquidDatabase's non-exclusive lock to prevent the database from being closed while
+     * the transaction is active.
+     * <p>
+     * The recommended pattern for beginning and ending transactions is this:
+     *
+     * <pre>
+     *   db.beginTransaction();
+     *   try {
+     *     ...
+     *     db.setTransactionSuccessful();
+     *   } finally {
+     *     db.endTransaction();
+     *   }
+     * </pre>
      *
      * @see #acquireNonExclusiveLock()
-     * @see SQLiteDatabase#beginTransaction()
+     * @see ISQLiteDatabase#beginTransaction()
      */
     public void beginTransaction() {
         acquireNonExclusiveLock();
-        getDatabase().beginTransaction();
-        transactionSuccessState.get().beginTransaction();
+        try {
+            getDatabase().beginTransaction();
+            transactionSuccessState.get().beginTransaction();
+        } catch (RuntimeException e) {
+            // Only release lock if begin xact was not successful
+            releaseNonExclusiveLock();
+            throw e;
+        }
     }
 
     /**
-     * Begin a non-exclusive transaction. This acquires a non-exclusive lock.
+     * Begin a transaction in IMMEDIATE mode. Other writer threads will not be able to access the database (i.e. will
+     * block) while this transaction is active, but reader threads may be able to read from the database if it is
+     * configured to use write-ahead logging.
+     * <p>
+     * As with Android's SQLiteDatabase, transactions can be nested. If any inner transaction is not marked as
+     * successful, the entire outer transaction is considered to have failed and will be rolled back. Otherwise all
+     * changes will be committed.
+     * <p>
+     * This method acquires the SquidDatabase's non-exclusive lock to prevent the database from being closed while
+     * the transaction is active.
+     * <p>
+     * The recommended pattern for beginning and ending transactions is this:
+     *
+     * <pre>
+     *   db.beginTransactionNonExclusive();
+     *   try {
+     *     ...
+     *     db.setTransactionSuccessful();
+     *   } finally {
+     *     db.endTransaction();
+     *   }
+     * </pre>
      *
      * @see #acquireNonExclusiveLock()
-     * @see SQLiteDatabase#beginTransactionNonExclusive()
+     * @see ISQLiteDatabase#beginTransactionNonExclusive()
+     * @see ISQLiteDatabase#enableWriteAheadLogging()
      */
     public void beginTransactionNonExclusive() {
         acquireNonExclusiveLock();
-        getDatabase().beginTransactionNonExclusive();
-        transactionSuccessState.get().beginTransaction();
+        try {
+            getDatabase().beginTransactionNonExclusive();
+            transactionSuccessState.get().beginTransaction();
+        } catch (RuntimeException e) {
+            // Only release lock if begin xact was not successful
+            releaseNonExclusiveLock();
+            throw e;
+        }
     }
 
     /**
-     * Begin a transaction with a listener. This acquires a non-exclusive lock.
+     * Begin a transaction in EXCLUSIVE mode with the given listener. Other reader and writer threads will not be able
+     * to access the database (i.e. will block) while this transaction is active.
+     * <p>
+     * As with Android's SQLiteDatabase, transactions can be nested. If any inner transaction is not marked as
+     * successful, the entire outer transaction is considered to have failed and will be rolled back. Otherwise all
+     * changes will be committed.
+     * <p>
+     * This method acquires the SquidDatabase's non-exclusive lock to prevent the database from being closed while
+     * the transaction is active.
+     * <p>
+     * The recommended pattern for beginning and ending transactions is this:
+     *
+     * <pre>
+     *   db.beginTransactionWithListener(listener);
+     *   try {
+     *     ...
+     *     db.setTransactionSuccessful();
+     *   } finally {
+     *     db.endTransaction();
+     *   }
+     * </pre>
      *
      * @param listener the transaction listener
      * @see #acquireNonExclusiveLock()
-     * @see SQLiteDatabase#beginTransactionWithListener(android.database.sqlite.SQLiteTransactionListener)
+     * @see ISQLiteDatabase#beginTransactionWithListener(SquidTransactionListener)
      */
     public void beginTransactionWithListener(SquidTransactionListener listener) {
         acquireNonExclusiveLock();
-        getDatabase().beginTransactionWithListener(listener);
-        transactionSuccessState.get().beginTransaction();
+        try {
+            getDatabase().beginTransactionWithListener(listener);
+            transactionSuccessState.get().beginTransaction();
+        } catch (RuntimeException e) {
+            // Only release lock if begin xact was not successful
+            releaseNonExclusiveLock();
+            throw e;
+        }
     }
 
     /**
-     * Begin a non-exclusive transaction with a listener. This acquires a non-exclusive lock.
+     * Begin a transaction in IMMEDIATE mode with the given listener. Other writer threads will not be able to access
+     * the database (i.e. will block) while this transaction is active, but reader threads may be able to read from the
+     * database if it is configured to use write-ahead logging.
+     * <p>
+     * As with Android's SQLiteDatabase, transactions can be nested. If any inner transaction is not marked as
+     * successful, the entire outer transaction is considered to have failed and will be rolled back. Otherwise all
+     * changes will be committed.
+     * <p>
+     * This method acquires the SquidDatabase's non-exclusive lock to prevent the database from being closed while
+     * the transaction is active.
+     * <p>
+     * The recommended pattern for beginning and ending transactions is this:
+     *
+     * <pre>
+     *   db.beginTransactionWithListenerNonExclusive(listener);
+     *   try {
+     *     ...
+     *     db.setTransactionSuccessful();
+     *   } finally {
+     *     db.endTransaction();
+     *   }
+     * </pre>
      *
      * @param listener the transaction listener
      * @see #acquireNonExclusiveLock()
-     * @see SQLiteDatabase#beginTransactionWithListenerNonExclusive(android.database.sqlite.SQLiteTransactionListener)
+     * @see ISQLiteDatabase#beginTransactionWithListenerNonExclusive(SquidTransactionListener)
+     * @see ISQLiteDatabase#enableWriteAheadLogging()
      */
     public void beginTransactionWithListenerNonExclusive(SquidTransactionListener listener) {
         acquireNonExclusiveLock();
-        getDatabase().beginTransactionWithListenerNonExclusive(listener);
-        transactionSuccessState.get().beginTransaction();
+        try {
+            getDatabase().beginTransactionWithListenerNonExclusive(listener);
+            transactionSuccessState.get().beginTransaction();
+        } catch (RuntimeException e) {
+            // Only release lock if begin xact was not successful
+            releaseNonExclusiveLock();
+            throw e;
+        }
     }
 
     /**
      * Mark the current transaction as successful
      *
-     * @see SQLiteDatabase#setTransactionSuccessful()
+     * @see ISQLiteDatabase#setTransactionSuccessful()
      */
     public void setTransactionSuccessful() {
         getDatabase().setTransactionSuccessful();
@@ -780,28 +1027,35 @@ public abstract class SquidDatabase {
     }
 
     /**
-     * @return true if a transaction is active
-     * @see SQLiteDatabase#inTransaction()
+     * @return true if a transaction is active on the current thread
+     * @see ISQLiteDatabase#inTransaction()
      */
-    public synchronized boolean inTransaction() {
-        return database != null && database.inTransaction();
+    public final boolean inTransaction() {
+        synchronized (databaseInstanceLock) {
+            return database != null && database.inTransaction();
+        }
     }
 
     /**
      * End the current transaction
      *
-     * @see SQLiteDatabase#endTransaction()
+     * @see ISQLiteDatabase#endTransaction()
      */
     public void endTransaction() {
-        getDatabase().endTransaction();
-        releaseNonExclusiveLock();
-
         TransactionSuccessState successState = transactionSuccessState.get();
-        successState.endTransaction();
+        try {
+            getDatabase().endTransaction();
+        } catch (RuntimeException e) {
+            successState.unsetTransactionSuccessful();
+            throw e;
+        } finally {
+            releaseNonExclusiveLock();
 
-        if (!inTransaction()) {
-            flushAccumulatedNotifications(successState.outerTransactionSuccess);
-            successState.reset();
+            successState.endTransaction();
+            if (!successState.inTransaction()) {
+                flushAccumulatedNotifications(successState.outerTransactionSuccess);
+                successState.reset();
+            }
         }
     }
 
@@ -810,16 +1064,26 @@ public abstract class SquidDatabase {
     // is also considered to have failed.
     private static class TransactionSuccessState {
 
-        Deque<Boolean> nestedSuccessStack = new LinkedList<Boolean>();
+        Deque<Boolean> nestedSuccessStack = new LinkedList<>();
         boolean outerTransactionSuccess = true;
 
         private void beginTransaction() {
             nestedSuccessStack.push(false);
         }
 
+        private boolean inTransaction() {
+            return nestedSuccessStack.size() > 0;
+        }
+
         private void setTransactionSuccessful() {
             nestedSuccessStack.pop();
             nestedSuccessStack.push(true);
+        }
+
+        // For when endTransaction throws
+        private void unsetTransactionSuccessful() {
+            nestedSuccessStack.pop();
+            nestedSuccessStack.push(false);
         }
 
         private void endTransaction() {
@@ -844,35 +1108,22 @@ public abstract class SquidDatabase {
     /**
      * Yield the current transaction
      *
-     * @see SQLiteDatabase#yieldIfContendedSafely()
+     * @return true if the transaction was yielded
+     * @see ISQLiteDatabase#yieldIfContendedSafely()
      */
     public boolean yieldIfContendedSafely() {
         return getDatabase().yieldIfContendedSafely();
     }
 
     /**
-     * Convenience method for calling {@link ContentResolver#notifyChange(Uri, android.database.ContentObserver)
-     * ContentResolver.notifyChange(uri, null)}.
+     * Yield the current transaction
      *
-     * @param uri the Uri to notify
+     * @param sleepAfterYieldDelay milliseconds to sleep before restarting the transaction
+     * (if it was yielded successfully)
+     * @return true if the transaction was yielded
      */
-    public void notifyChange(Uri uri) {
-        context.getContentResolver().notifyChange(uri, null);
-    }
-
-    /**
-     * Convenience method for calling {@link ContentResolver#notifyChange(Uri, android.database.ContentObserver)
-     * ContentResolver.notifyChange(uri, null)} on all the provided Uris.
-     *
-     * @param uris the Uris to notify
-     */
-    public void notifyChange(Collection<Uri> uris) {
-        if (uris != null && !uris.isEmpty()) {
-            ContentResolver resolver = context.getContentResolver();
-            for (Uri uri : uris) {
-                resolver.notifyChange(uri, null);
-            }
-        }
+    public boolean yieldIfContendedSafely(long sleepAfterYieldDelay) {
+        return getDatabase().yieldIfContendedSafely(sleepAfterYieldDelay);
     }
 
     /**
@@ -882,16 +1133,15 @@ public abstract class SquidDatabase {
      * database is attached to another database).
      * <p>
      * Only one thread can hold an exclusive lock at a time. Calling this while on a thread that already holds a non-
-     * exclusive lock is an error and will deadlock! We will throw an exception if this method is called while the
-     * calling thread is in a transaction. Otherwise, this method will block until all non-exclusive locks
-     * acquired with {@link #acquireNonExclusiveLock()} have been released, but will prevent any new non-exclusive
-     * locks from being acquired while it blocks.
+     * exclusive lock is an error! We will throw an exception if this method is called while the
+     * calling thread is in a transaction or otherwise holds the non-exclusive lock. Otherwise, this method will block
+     * until all non-exclusive locks acquired with {@link #acquireNonExclusiveLock()} have been released, but will
+     * prevent any new non-exclusive locks from being acquired while it blocks.
      */
-    @Beta
     protected void acquireExclusiveLock() {
-        if (inTransaction()) {
-            throw new IllegalStateException(
-                    "Can't acquire an exclusive lock when the calling thread is in a transaction");
+        if (readWriteLock.getReadHoldCount() > 0 && readWriteLock.getWriteHoldCount() == 0) {
+            throw new IllegalStateException("Can't acquire an exclusive lock when the calling thread is in a "
+                    + "transaction or otherwise holds a non-exclusive lock and not the exclusive lock");
         }
         readWriteLock.writeLock().lock();
     }
@@ -899,7 +1149,6 @@ public abstract class SquidDatabase {
     /**
      * Release the exclusive lock acquired by {@link #acquireExclusiveLock()}
      */
-    @Beta
     protected void releaseExclusiveLock() {
         readWriteLock.writeLock().unlock();
     }
@@ -910,7 +1159,6 @@ public abstract class SquidDatabase {
      * writes (see {@link #acquireExclusiveLock()} for why this is true). This will block if the exclusive lock is held
      * by some other thread. Many threads can hold non-exclusive locks as long as no thread holds the exclusive lock.
      */
-    @Beta
     protected void acquireNonExclusiveLock() {
         readWriteLock.readLock().lock();
     }
@@ -918,7 +1166,6 @@ public abstract class SquidDatabase {
     /**
      * Releases a non-exclusive lock acquired with {@link #acquireNonExclusiveLock()}
      */
-    @Beta
     protected void releaseNonExclusiveLock() {
         readWriteLock.readLock().unlock();
     }
@@ -926,8 +1173,8 @@ public abstract class SquidDatabase {
     // --- helper classes
 
     /**
-     * Delegate class passed to a {@link SQLiteOpenHelperWrapper} instance that allows the SQLiteOpenHelperWrapper to call back
-     * into its owning SquidDatabase after the database has been created or opened.
+     * Delegate class passed to a {@link ISQLiteOpenHelper} instance that allows the {@link ISQLiteOpenHelper}
+     * implementation to call back into its owning SquidDatabase after the database has been created or opened.
      */
     public final class OpenHelperDelegate {
 
@@ -938,7 +1185,7 @@ public abstract class SquidDatabase {
         /**
          * Called to create the database tables
          */
-        public void onCreate(SQLiteDatabaseWrapper db) {
+        public void onCreate(ISQLiteDatabase db) {
             setDatabase(db);
             StringBuilder sql = new StringBuilder(STRING_BUILDER_INITIAL_CAPACITY);
             SqlConstructorVisitor sqlVisitor = new SqlConstructorVisitor();
@@ -947,7 +1194,7 @@ public abstract class SquidDatabase {
             Table[] tables = getTables();
             if (tables != null) {
                 for (Table table : tables) {
-                    table.appendCreateTableSql(getSqliteVersion(), sql, sqlVisitor);
+                    table.appendCreateTableSql(getCompileContext(), sql, sqlVisitor);
                     db.execSQL(sql.toString());
                     sql.setLength(0);
                 }
@@ -956,7 +1203,7 @@ public abstract class SquidDatabase {
             View[] views = getViews();
             if (views != null) {
                 for (View view : views) {
-                    view.createViewSql(getSqliteVersion(), sql);
+                    view.createViewSql(getCompileContext(), sql);
                     db.execSQL(sql.toString());
                     sql.setLength(0);
                 }
@@ -976,15 +1223,15 @@ public abstract class SquidDatabase {
         /**
          * Called to upgrade the database to a new version
          */
-        public void onUpgrade(SQLiteDatabaseWrapper db, int oldVersion, int newVersion) {
+        public void onUpgrade(ISQLiteDatabase db, int oldVersion, int newVersion) {
             setDatabase(db);
             boolean success = false;
-            Throwable thrown = null;
+            Exception thrown = null;
             isInMigration = true;
             try {
                 success = SquidDatabase.this.onUpgrade(db, oldVersion, newVersion);
-            } catch (Throwable t) {
-                thrown = t;
+            } catch (Exception e) {
+                thrown = e;
                 success = false;
             } finally {
                 isInMigration = false;
@@ -1002,15 +1249,15 @@ public abstract class SquidDatabase {
         /**
          * Called to downgrade the database to an older version
          */
-        public void onDowngrade(SQLiteDatabaseWrapper db, int oldVersion, int newVersion) {
+        public void onDowngrade(ISQLiteDatabase db, int oldVersion, int newVersion) {
             setDatabase(db);
             boolean success = false;
-            Throwable thrown = null;
+            Exception thrown = null;
             isInMigration = true;
             try {
                 success = SquidDatabase.this.onDowngrade(db, oldVersion, newVersion);
-            } catch (Throwable t) {
-                thrown = t;
+            } catch (Exception e) {
+                thrown = e;
                 success = false;
             } finally {
                 isInMigration = false;
@@ -1025,25 +1272,36 @@ public abstract class SquidDatabase {
             }
         }
 
-        public void onConfigure(SQLiteDatabaseWrapper db) {
+        public void onConfigure(ISQLiteDatabase db) {
             setDatabase(db);
             SquidDatabase.this.onConfigure(db);
         }
 
-        public void onOpen(SQLiteDatabaseWrapper db) {
+        public void onOpen(ISQLiteDatabase db) {
             setDatabase(db);
             SquidDatabase.this.onOpen(db);
         }
     }
 
-    private synchronized void setDatabase(SQLiteDatabaseWrapper db) {
-        // If we're already holding a reference to the same object, don't need to update or recalculate the version
-        if (database != null && db != null
-                && db.getWrappedDatabase() == database.getWrappedDatabase()) {
-            return;
+    private void setDatabase(ISQLiteDatabase db) {
+        synchronized (databaseInstanceLock) {
+            // If we're already holding a reference to the same object, don't need to update or recalculate the version
+            if (database != null && db != null && db.getWrappedObject() == database.getWrappedObject()) {
+                return;
+            }
+            sqliteVersion = db != null ? readSqliteVersionLocked(db) : null;
+            database = db;
         }
-        database = db;
-        sqliteVersion = database != null ? readSqliteVersion() : null;
+    }
+
+    private VersionCode readSqliteVersionLocked(ISQLiteDatabase db) {
+        try {
+            String versionString = db.simpleQueryForString("select sqlite_version()", null);
+            return VersionCode.parse(versionString);
+        } catch (RuntimeException e) {
+            onError("Failed to read sqlite version", e);
+            throw e;
+        }
     }
 
     // --- utility methods
@@ -1055,14 +1313,20 @@ public abstract class SquidDatabase {
      * @return true if the statement executed without error, false otherwise
      */
     protected boolean tryAddColumn(Property<?> property) {
-        if (!(property.table instanceof Table)) {
+        if (!propertyBelongsToTable(property)) {
             throw new IllegalArgumentException("Can't alter table: property does not belong to a Table");
         }
         SqlConstructorVisitor visitor = new SqlConstructorVisitor();
         StringBuilder sql = new StringBuilder(STRING_BUILDER_INITIAL_CAPACITY);
-        sql.append("ALTER TABLE ").append(property.table.getExpression()).append(" ADD ");
+        sql.append("ALTER TABLE ").append(property.tableModelName.tableName).append(" ADD ");
         property.accept(visitor, sql);
         return tryExecSql(sql.toString());
+    }
+
+    private boolean propertyBelongsToTable(Property<?> property) {
+        return property.tableModelName.modelClass != null &&
+                TableModel.class.isAssignableFrom(property.tableModelName.modelClass) &&
+                !SqlUtils.isEmpty(property.tableModelName.tableName);
     }
 
     /**
@@ -1074,7 +1338,7 @@ public abstract class SquidDatabase {
     protected boolean tryCreateTable(Table table) {
         SqlConstructorVisitor sqlVisitor = new SqlConstructorVisitor();
         StringBuilder sql = new StringBuilder(STRING_BUILDER_INITIAL_CAPACITY);
-        table.appendCreateTableSql(getSqliteVersion(), sql, sqlVisitor);
+        table.appendCreateTableSql(getCompileContext(), sql, sqlVisitor);
         return tryExecSql(sql.toString());
     }
 
@@ -1098,7 +1362,7 @@ public abstract class SquidDatabase {
      */
     public boolean tryCreateView(View view) {
         StringBuilder sql = new StringBuilder(STRING_BUILDER_INITIAL_CAPACITY);
-        view.createViewSql(getSqliteVersion(), sql);
+        view.createViewSql(getCompileContext(), sql);
         return tryExecSql(sql.toString());
     }
 
@@ -1180,7 +1444,7 @@ public abstract class SquidDatabase {
      * @return true if the statement executed without error, false otherwise
      */
     public boolean tryExecStatement(SqlStatement statement) {
-        CompiledStatement compiled = statement.compile(getSqliteVersion());
+        CompiledStatement compiled = statement.compile(getCompileContext());
         return tryExecSql(compiled.sql, compiled.sqlArgs);
     }
 
@@ -1189,14 +1453,14 @@ public abstract class SquidDatabase {
      *
      * @param sql the statement to execute
      * @return true if the statement executed without an error
-     * @see SQLiteDatabase#execSQL(String)
+     * @see ISQLiteDatabase#execSQL(String)
      */
     public boolean tryExecSql(String sql) {
         acquireNonExclusiveLock();
         try {
             getDatabase().execSQL(sql);
             return true;
-        } catch (SQLExceptionWrapper e) {
+        } catch (RuntimeException e) {
             onError("Failed to execute statement: " + sql, e);
             return false;
         } finally {
@@ -1205,13 +1469,13 @@ public abstract class SquidDatabase {
     }
 
     /**
-     * Execute a raw SQL statement
+     * Execute a raw SQL statement. May throw a runtime exception if there is an error parsing the SQL or some other
+     * error
      *
      * @param sql the statement to execute
-     * @throws SQLExceptionWrapper if there is an error parsing the SQL or some other error
-     * @see SQLiteDatabase#execSQL(String)
+     * @see ISQLiteDatabase#execSQL(String)
      */
-    public void execSqlOrThrow(String sql) throws SQLExceptionWrapper {
+    public void execSqlOrThrow(String sql) {
         acquireNonExclusiveLock();
         try {
             getDatabase().execSQL(sql);
@@ -1227,14 +1491,14 @@ public abstract class SquidDatabase {
      * @param sql the statement to execute
      * @param bindArgs the arguments to bind to the statement
      * @return true if the statement executed without an error
-     * @see SQLiteDatabase#execSQL(String, Object[])
+     * @see ISQLiteDatabase#execSQL(String, Object[])
      */
     public boolean tryExecSql(String sql, Object[] bindArgs) {
         acquireNonExclusiveLock();
         try {
             getDatabase().execSQL(sql, bindArgs);
             return true;
-        } catch (SQLExceptionWrapper e) {
+        } catch (RuntimeException e) {
             onError("Failed to execute statement: " + sql, e);
             return false;
         } finally {
@@ -1244,14 +1508,13 @@ public abstract class SquidDatabase {
 
     /**
      * Execute a raw SQL statement with optional arguments. The sql string may contain '?' placeholders for the
-     * arguments.
+     * arguments. May throw a runtime exception if there is an error parsing the SQL or some other error
      *
      * @param sql the statement to execute
      * @param bindArgs the arguments to bind to the statement
-     * @throws SQLExceptionWrapper if there is an error parsing the SQL or some other error
-     * @see SQLiteDatabase#execSQL(String, Object[])
+     * @see ISQLiteDatabase#execSQL(String, Object[])
      */
-    public void execSqlOrThrow(String sql, Object[] bindArgs) throws SQLExceptionWrapper {
+    public void execSqlOrThrow(String sql, Object[] bindArgs) {
         acquireNonExclusiveLock();
         try {
             getDatabase().execSQL(sql, bindArgs);
@@ -1265,24 +1528,77 @@ public abstract class SquidDatabase {
      * @throws RuntimeException if the version could not be read
      */
     public VersionCode getSqliteVersion() {
-        if (sqliteVersion == null) {
-            synchronized (this) {
-                if (sqliteVersion == null) {
-                    sqliteVersion = readSqliteVersion();
+        VersionCode toReturn = sqliteVersion;
+        if (toReturn == null) {
+            acquireNonExclusiveLock();
+            try {
+                synchronized (databaseInstanceLock) {
+                    getDatabase(); // Opening the database will populate the sqliteVersion field
+                    return sqliteVersion;
                 }
+            } finally {
+                releaseNonExclusiveLock();
             }
         }
-        return sqliteVersion;
+        return toReturn;
     }
 
-    private VersionCode readSqliteVersion() {
+    /**
+     * @return a CompileContext that this SquidDatabase should use when compiling SQL statements like {@link Query},
+     * {@link Insert}, {@link Update}, and {@link Delete}. If necessary, users can customize the returned
+     * CompileContext object by overriding {@link #buildCompileContext(CompileContext.Builder)} to e.g. specify a
+     * different implementation of {@link com.yahoo.squidb.sql.ArgumentResolver} to use.
+     */
+    public final CompileContext getCompileContext() {
+        CompileContext.Builder builder = new CompileContext.Builder(getSqliteVersion());
+        buildCompileContext(builder);
+        return builder.build();
+    }
+
+    /**
+     * Users can override this method to customize the CompileContext object that will be used when compiling SQL
+     * statements, e.g. by setting a custom {@link com.yahoo.squidb.sql.ArgumentResolver} to handle non-primitive
+     * arguments in the SQL. Most users will not need to use this hook.
+     *
+     * @param builder a builder for a {@link CompileContext} object to be returned by {@link #getCompileContext()}
+     * @see #getCompileContext()
+     */
+    protected void buildCompileContext(CompileContext.Builder builder) {
+        // Subclasses can override to change the basic parameters of the CompileContext
+    }
+
+    /**
+     * Prepares a low-level SQLite statement, represented as an instance of {@link ISQLitePreparedStatement}. The
+     * statement should either be a non-query (e.g. an INSERT or UPDATE) or a query that returns only a 1x1 result.
+     * You should call {@link ISQLitePreparedStatement#close()} when you are finished with the prepared statement.
+     * <p>
+     * The returned object is only safe to use while this database is still open. The easiest/recommended way to
+     * manage prepared statements is to avoid keeping any cached instances in memory for a long time. For example, this
+     * could be accomplished by only acquiring prepared statements within a transaction, using them to do work within
+     * that transaction only, and then closing the prepared statement when the transaction is about to end.
+     * <p>
+     * If you are acquiring/using a prepared statement only within the duration of a transaction, no additional locking
+     * is necessary. If you do choose to keep a prepared statement alive outside the scope you created it in, you may
+     * require additional locking if any code path in your app may close/re-open the database. If you wish to
+     * prevent the database from being closed while the prepared statement is open/in use, you can acquire the
+     * database's non-exclusive lock using {@link #acquireNonExclusiveLock()}, which will prevent the DB from being
+     * closed while the lock is held. You can release such a lock with {@link #releaseNonExclusiveLock()}. Note that
+     * any thread attempting to close the DB will block if such a lock is held, so use them carefully. Failure to
+     * implement such locking in an app that may close the database could lead to race conditions.
+     * <p>
+     * If you keep long-lived references to prepared statements alive and some code path in your app may close/re-open
+     * the database, you should take care to clean up any such references by closing any open statements and nulling
+     * out any references to them so they can't accidentally be used after the database has been closed. Such
+     * bookkeeping can be done by taking advantage of the {@link #onClose(ISQLiteDatabase)} hook, which is called
+     * immediately before the database connection is about to be closed.
+     *
+     * @param sql the SQL to compile into a prepared statement
+     * @return a {@link ISQLitePreparedStatement} object representing the compiled SQL
+     */
+    public ISQLitePreparedStatement prepareStatement(String sql) {
         acquireNonExclusiveLock();
         try {
-            String versionString = getDatabase().simpleQueryForString("select sqlite_version()", null);
-            return VersionCode.parse(versionString);
-        } catch (RuntimeException e) {
-            onError("Failed to read sqlite version", e);
-            throw new RuntimeException("Failed to read sqlite version", e);
+            return getDatabase().prepareStatement(sql);
         } finally {
             releaseNonExclusiveLock();
         }
@@ -1295,7 +1611,7 @@ public abstract class SquidDatabase {
 
         private Void appendColumnDefinition(String type, Property<?> property, StringBuilder sql) {
             sql.append(property.getName()).append(" ").append(type);
-            if (!TextUtils.isEmpty(property.getColumnDefinition())) {
+            if (!SqlUtils.isEmpty(property.getColumnDefinition())) {
                 sql.append(" ").append(property.getColumnDefinition());
             }
             return null;
@@ -1341,8 +1657,8 @@ public abstract class SquidDatabase {
     /**
      * Exception thrown when an upgrade or downgrade fails for any reason. Clients that want to provide more
      * information about why an upgrade or downgrade failed can subclass this class and throw it intentionally in
-     * {@link #onUpgrade(SQLiteDatabaseWrapper, int, int) onUpgrade()} or
-     * {@link #onDowngrade(SQLiteDatabaseWrapper, int, int) onDowngrade()}, and it will be forwarded to
+     * {@link #onUpgrade(ISQLiteDatabase, int, int) onUpgrade()} or
+     * {@link #onDowngrade(ISQLiteDatabase, int, int) onDowngrade()}, and it will be forwarded to
      * {@link #onMigrationFailed(MigrationFailedException) onMigrationFailed()}.
      */
     public static class MigrationFailedException extends RuntimeException {
@@ -1359,16 +1675,10 @@ public abstract class SquidDatabase {
         }
 
         public MigrationFailedException(String dbName, int oldVersion, int newVersion, Throwable throwable) {
-            super(throwable);
+            super("Failed to migrate db " + dbName + " from version " + oldVersion + " to " + newVersion, throwable);
             this.dbName = dbName;
             this.oldVersion = oldVersion;
             this.newVersion = newVersion;
-        }
-
-        @Override
-        @SuppressLint("DefaultLocale")
-        public String getMessage() {
-            return String.format("Failed to migrate db \"%s\" from version %d to %d", dbName, oldVersion, newVersion);
         }
     }
 
@@ -1383,6 +1693,19 @@ public abstract class SquidDatabase {
      * @return a {@link SquidCursor} containing the query results
      */
     public <TYPE extends AbstractModel> SquidCursor<TYPE> query(Class<TYPE> modelClass, Query query) {
+        query = inferTableForQuery(modelClass, query);
+        CompiledStatement compiled = query.compile(getCompileContext());
+        if (compiled.needsValidation) {
+            String validateSql = query.sqlForValidation(getCompileContext());
+            ensureSqlCompiles(validateSql); // throws if the statement fails to compile
+        }
+        ICursor cursor = rawQuery(compiled.sql, compiled.sqlArgs);
+        return new SquidCursor<>(cursor, modelClass, query.getFields());
+    }
+
+    // If the query does not have a from clause, look up the table by model object and add it to the query. May
+    // return a new query object if the argument passed was frozen.
+    private Query inferTableForQuery(Class<? extends AbstractModel> modelClass, Query query) {
         if (!query.hasTable() && modelClass != null) {
             SqlTable<?> table = getSqlTable(modelClass);
             if (table == null) {
@@ -1391,15 +1714,18 @@ public abstract class SquidDatabase {
             }
             query = query.from(table); // If argument was frozen, we may get a new object
         }
-        CompiledStatement compiled = query.compile(getSqliteVersion());
-        if (compiled.needsValidation) {
-            String validateSql = query.sqlForValidation(getSqliteVersion());
-            compileStatement(validateSql); // throws if the statement fails to compile
-        }
-        Cursor cursor = rawQuery(compiled.sql, compiled.sqlArgs);
-        return new SquidCursor<TYPE>(cursor, query.getFields());
+        return query;
     }
 
+    // For use only when validating queries
+    private void ensureSqlCompiles(String sql) {
+        acquireNonExclusiveLock();
+        try {
+            getDatabase().ensureSqlCompiles(sql);
+        } finally {
+            releaseNonExclusiveLock();
+        }
+    }
 
     /**
      * Fetch the specified model object with the given row ID
@@ -1450,13 +1776,7 @@ public abstract class SquidDatabase {
             TYPE toReturn = modelClass.newInstance();
             toReturn.readPropertiesFromCursor(cursor);
             return toReturn;
-        } catch (SecurityException e) {
-            throw new RuntimeException(e);
-        } catch (IllegalArgumentException e) {
-            throw new RuntimeException(e);
-        } catch (InstantiationException e) {
-            throw new RuntimeException(e);
-        } catch (IllegalAccessException e) {
+        } catch (Exception e) {
             throw new RuntimeException(e);
         } finally {
             cursor.close();
@@ -1472,7 +1792,7 @@ public abstract class SquidDatabase {
      */
     public boolean delete(Class<? extends TableModel> modelClass, long id) {
         Table table = getTable(modelClass);
-        int rowsUpdated = deleteInternal(Delete.from(table).where(table.getIdProperty().eq(id)));
+        int rowsUpdated = deleteInternal(Delete.from(table).where(table.getRowIdProperty().eq(id)));
         if (rowsUpdated > 0) {
             notifyForTable(DataChangedNotifier.DBOperation.DELETE, null, table, id);
         }
@@ -1559,7 +1879,8 @@ public abstract class SquidDatabase {
 
     /**
      * Update all rows matching the given {@link Criterion}, setting values based on the provided template model. Any
-     * constraint violations will be resolved using the specified {@link TableStatement.ConflictAlgorithm}.
+     * constraint violations will be resolved using the specified
+     * {@link com.yahoo.squidb.sql.TableStatement.ConflictAlgorithm ConflictAlgorithm}.
      *
      * @param where the criterion to match. Note: passing null will update all rows!
      * @param template a model containing new values for the properties (columns) that should be updated
@@ -1631,7 +1952,8 @@ public abstract class SquidDatabase {
     /**
      * Save a model to the database. Creates a new row if the model does not have an ID, otherwise updates the row with
      * the corresponding row ID. If a new row is inserted, the model will have its ID set to the corresponding row ID.
-     * Any constraint violations will be resolved using the specified {@link TableStatement.ConflictAlgorithm}.
+     * Any constraint violations will be resolved using the specified
+     * {@link com.yahoo.squidb.sql.TableStatement.ConflictAlgorithm ConflictAlgorithm}.
      *
      * @param item the model to save
      * @param conflictAlgorithm the conflict algorithm to use
@@ -1656,7 +1978,7 @@ public abstract class SquidDatabase {
      * @return true if current the model data is stored in the database
      */
     public boolean createNew(TableModel item) {
-        item.setId(TableModel.NO_ID);
+        item.setRowId(TableModel.NO_ID);
         return insertRow(item, null);
     }
 
@@ -1698,24 +2020,42 @@ public abstract class SquidDatabase {
     protected final boolean insertRow(TableModel item, TableStatement.ConflictAlgorithm conflictAlgorithm) {
         Class<? extends TableModel> modelClass = item.getClass();
         Table table = getTable(modelClass);
+
         long newRow;
-        ContentValues mergedValues = item.getMergedValues();
-        if (mergedValues.size() == 0) {
-            return false;
-        }
-        if (conflictAlgorithm == null) {
-            newRow = insertOrThrow(table.getExpression(), null, mergedValues);
+        if (preparedInsertCacheEnabled) {
+            acquireNonExclusiveLock();
+            try {
+                PreparedInsertCache insertCache = preparedInsertCache.get();
+                ISQLitePreparedStatement preparedStatement =
+                        insertCache.getPreparedInsert(this, table, conflictAlgorithm);
+                item.bindValuesForInsert(table, preparedStatement);
+                newRow = preparedStatement.executeInsert();
+            } finally {
+                releaseNonExclusiveLock();
+            }
         } else {
-            newRow = insertWithOnConflict(table.getExpression(), null, mergedValues,
-                    conflictAlgorithm.getAndroidValue());
+            newRow = insertRowLegacy(item, table, conflictAlgorithm);
         }
+
         boolean result = newRow > 0;
         if (result) {
             notifyForTable(DataChangedNotifier.DBOperation.INSERT, item, table, newRow);
-            item.setId(newRow);
+            item.setRowId(newRow);
             item.markSaved();
         }
         return result;
+    }
+
+    private long insertRowLegacy(TableModel item, Table table, TableStatement.ConflictAlgorithm conflictAlgorithm) {
+        ValuesStorage mergedValues = item.getMergedValues();
+        if (mergedValues.size() == 0) {
+            return -1;
+        }
+        Insert insert = Insert.into(table).fromValues(mergedValues);
+        if (conflictAlgorithm != null) {
+            insert.onConflict(conflictAlgorithm);
+        }
+        return insertInternal(insert);
     }
 
     /**
@@ -1747,13 +2087,13 @@ public abstract class SquidDatabase {
 
         Class<? extends TableModel> modelClass = item.getClass();
         Table table = getTable(modelClass);
-        Update update = Update.table(table).fromTemplate(item).where(table.getIdProperty().eq(item.getId()));
+        Update update = Update.table(table).fromTemplate(item).where(table.getRowIdProperty().eq(item.getRowId()));
         if (conflictAlgorithm != null) {
             update.onConflict(conflictAlgorithm);
         }
         boolean result = updateInternal(update) > 0;
         if (result) {
-            notifyForTable(DataChangedNotifier.DBOperation.UPDATE, item, table, item.getId());
+            notifyForTable(DataChangedNotifier.DBOperation.UPDATE, item, table, item.getRowId());
             item.markSaved();
         }
         return result;
@@ -1784,7 +2124,7 @@ public abstract class SquidDatabase {
     protected <TYPE extends TableModel> SquidCursor<TYPE> fetchItemById(Class<TYPE> modelClass, long id,
             Property<?>... properties) {
         Table table = getTable(modelClass);
-        return fetchFirstItem(modelClass, table.getIdProperty().eq(id), properties);
+        return fetchFirstItem(modelClass, table.getRowIdProperty().eq(id), properties);
     }
 
     protected <TYPE extends AbstractModel> SquidCursor<TYPE> fetchFirstItem(Class<TYPE> modelClass,
@@ -1818,12 +2158,13 @@ public abstract class SquidDatabase {
         if (criterion != null) {
             query.where(criterion);
         }
-        SquidCursor<?> cursor = query(modelClass, query);
+        query = inferTableForQuery(modelClass, query);
+        CompiledStatement compiled = query.compile(getCompileContext());
+        acquireNonExclusiveLock();
         try {
-            cursor.moveToFirst();
-            return cursor.get(countProperty);
+            return (int) getDatabase().simpleQueryForLong(compiled.sql, compiled.sqlArgs);
         } finally {
-            cursor.close();
+            releaseNonExclusiveLock();
         }
     }
 
@@ -1841,16 +2182,15 @@ public abstract class SquidDatabase {
 
     private final Object notifiersLock = new Object();
     private boolean dataChangedNotificationsEnabled = true;
-    private List<DataChangedNotifier<?>> globalNotifiers = new ArrayList<DataChangedNotifier<?>>();
-    private Map<SqlTable<?>, List<DataChangedNotifier<?>>> tableNotifiers
-            = new HashMap<SqlTable<?>, List<DataChangedNotifier<?>>>();
+    private List<DataChangedNotifier<?>> globalNotifiers = new ArrayList<>();
+    private Map<SqlTable<?>, List<DataChangedNotifier<?>>> tableNotifiers = new HashMap<>();
 
     // Using a ThreadLocal makes it easy to have one accumulator set per transaction, since
     // transactions are also associated with the thread they run on
     private ThreadLocal<Set<DataChangedNotifier<?>>> notifierAccumulator
             = new ThreadLocal<Set<DataChangedNotifier<?>>>() {
         protected Set<DataChangedNotifier<?>> initialValue() {
-            return new HashSet<DataChangedNotifier<?>>();
+            return new HashSet<>();
         }
     };
 
@@ -1873,7 +2213,7 @@ public abstract class SquidDatabase {
                 for (SqlTable<?> table : tables) {
                     List<DataChangedNotifier<?>> notifiersForTable = tableNotifiers.get(table);
                     if (notifiersForTable == null) {
-                        notifiersForTable = new ArrayList<DataChangedNotifier<?>>();
+                        notifiersForTable = new ArrayList<>();
                         tableNotifiers.put(table, notifiersForTable);
                     }
                     notifiersForTable.add(notifier);
@@ -1926,6 +2266,13 @@ public abstract class SquidDatabase {
         dataChangedNotificationsEnabled = enabled;
     }
 
+    /**
+     * @return true if data change notifications are enabled for this database; false otherwise
+     */
+    public boolean areDataChangedNotificationsEnabled() {
+        return dataChangedNotificationsEnabled;
+    }
+
     private void notifyForTable(DataChangedNotifier.DBOperation op, AbstractModel modelValues, SqlTable<?> table,
             long rowId) {
         if (!dataChangedNotificationsEnabled) {
@@ -1959,5 +2306,71 @@ public abstract class SquidDatabase {
             }
             accumulatedNotifiers.clear();
         }
+    }
+
+    // -- debugging utilities
+
+    /**
+     * Directly analogous to {@link #query(Class, Query)}, but instead of returning a result, this method just logs the
+     * output of EXPLAIN QUERY PLAN for the given query. This is method is intended for debugging purposes only.
+     */
+    public void explainQueryPlan(Class<? extends AbstractModel> modelClass, Query query) {
+        query = inferTableForQuery(modelClass, query);
+        CompiledStatement compiled = query.compile(getCompileContext());
+        ICursor cursor = rawQuery("EXPLAIN QUERY PLAN " + compiled.sql, compiled.sqlArgs);
+        try {
+            Logger.d(Logger.LOG_TAG, "Query plan for: " + compiled.sql);
+            SquidUtilities.dumpCursor(cursor, -1);
+        } finally {
+            cursor.close();
+        }
+    }
+
+    /**
+     * Copies the database file and any supporting journal or WAL files needed to open the DB to the given directory.
+     * This method acquires the exclusive lock on the database before copying, which will prevent any other threads
+     * from reading or writing to the database while the copying is in progress. If this method is called from within
+     * a transaction, an exception will be thrown. This method is intended for debugging purposes only.
+     *
+     * @param toDir the directory to copy the database files to
+     * @return true if copying the database files succeeded, false otherwise
+     */
+    public boolean copyDatabase(File toDir) {
+        acquireExclusiveLock();
+        try {
+            return copyDatabaseLocked(toDir);
+        } finally {
+            releaseExclusiveLock();
+        }
+    }
+
+    private boolean copyDatabaseLocked(File toDir) {
+        if (!(toDir.mkdirs() || toDir.isDirectory())) {
+            Logger.e(Logger.LOG_TAG, "Error creating directories for database copy");
+            return false;
+        }
+        File dbFile = new File(getDatabasePath());
+        try {
+            if (copyFileIfExists(dbFile, toDir)) {
+                copyFileIfExists(new File(dbFile.getPath() + "-journal"), toDir);
+                copyFileIfExists(new File(dbFile.getPath() + "-shm"), toDir);
+                copyFileIfExists(new File(dbFile.getPath() + "-wal"), toDir);
+            } else {
+                Logger.e(Logger.LOG_TAG, "Attempted to copy database " + getName() + " but it doesn't exist yet");
+                return false;
+            }
+        } catch (IOException e) {
+            Logger.e(Logger.LOG_TAG, "Error copying database " + getName(), e);
+            return false;
+        }
+        return true;
+    }
+
+    private boolean copyFileIfExists(File in, File toDir) throws IOException {
+        if (in.exists()) {
+            SquidUtilities.copyFile(in, new File(toDir.getAbsolutePath() + File.separator + in.getName()));
+            return true;
+        }
+        return false;
     }
 }

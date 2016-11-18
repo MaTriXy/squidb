@@ -5,18 +5,15 @@
  */
 package com.yahoo.squidb.data;
 
-import android.database.Cursor;
-import android.database.CursorWrapper;
-import android.os.Bundle;
-
 import com.yahoo.squidb.sql.Field;
 import com.yahoo.squidb.sql.Property;
 import com.yahoo.squidb.sql.Property.PropertyVisitor;
+import com.yahoo.squidb.sql.Query;
 
 import java.util.List;
 
 /**
- * A wrapper around a {@link Cursor} that allows clients to extract individual {@link Property properties} or read an
+ * A wrapper around a {@link ICursor} that allows clients to extract individual {@link Property properties} or read an
  * entire {@link AbstractModel model} from a row in the cursor. After obtaining a cursor (such as from
  * {@link SquidDatabase#query(Class, com.yahoo.squidb.sql.Query) SquidDatabase.query}), as long as it is at a valid
  * position, you can read properties any of the following ways:
@@ -32,7 +29,10 @@ import java.util.List;
  *
  * @param <TYPE> the model type that can be read or constructed from this cursor
  */
-public class SquidCursor<TYPE extends AbstractModel> extends CursorWrapper {
+public class SquidCursor<TYPE extends AbstractModel> implements ICursor {
+
+    /** Model class that is suggested for reading from this cursor */
+    private final Class<TYPE> modelHint;
 
     /** Properties read by this cursor */
     private final List<? extends Field<?>> fields;
@@ -41,22 +41,26 @@ public class SquidCursor<TYPE extends AbstractModel> extends CursorWrapper {
     private static final CursorReadingVisitor reader = new CursorReadingVisitor();
 
     /** Wrapped cursor */
-    private final Cursor cursor;
-
-    /** An optional Bundle that can contain out-of-band metadata about this cursor */
-    private Bundle extras;
+    private final ICursor cursor;
 
     /**
-     * Create a SquidCursor from the supplied {@link Cursor}
+     * Create a SquidCursor from the supplied {@link ICursor}
      *
      * @param cursor the backing cursor
      * @param fields properties read from this cursor
      */
-    public SquidCursor(Cursor cursor, List<? extends Field<?>> fields) {
-        super(cursor);
+    public SquidCursor(ICursor cursor, Class<TYPE> modelHint, List<? extends Field<?>> fields) {
         this.cursor = cursor;
+        this.modelHint = modelHint;
         this.fields = fields;
-        setExtras(cursor.getExtras());
+    }
+
+    /**
+     * Deprecated in favor of {@link #SquidCursor(ICursor, Class, List)}
+     */
+    @Deprecated
+    public SquidCursor(ICursor cursor, List<? extends Field<?>> fields) {
+        this(cursor, null, fields);
     }
 
     /**
@@ -71,10 +75,21 @@ public class SquidCursor<TYPE extends AbstractModel> extends CursorWrapper {
     }
 
     /**
-     * @return the {@link Cursor} backing this SquidCursor
+     * @return the {@link ICursor} backing this SquidCursor. If you are on Android and you need to pass this object
+     * across process boundaries, and if this SquidCursor was obtained from a SquidDatabase, you can safely cast
+     * the object returned by this method to an Android cursor
      */
-    public Cursor getCursor() {
+    public ICursor getCursor() {
         return cursor;
+    }
+
+    /**
+     * @return the class object that represents a "hint" about which class should be used to read from this cursor.
+     * This class is only a suggestion, and may be null if the cursor was not constructed with a model hint (this
+     * may be the case if a null class was passed to {@link SquidDatabase#query(Class, Query)})
+     */
+    public Class<TYPE> getModelHintClass() {
+        return modelHint;
     }
 
     /**
@@ -84,19 +99,144 @@ public class SquidCursor<TYPE extends AbstractModel> extends CursorWrapper {
         return fields;
     }
 
-    /**
-     * Sets a {@link Bundle} that will be returned by {@link #getExtras()}. <code>null</code> will be converted into
-     * {@link Bundle#EMPTY}.
-     *
-     * @param extras the Bundle to set
-     */
-    public void setExtras(Bundle extras) {
-        this.extras = extras == null ? Bundle.EMPTY : extras;
+    @Override
+    public int getCount() {
+        return cursor.getCount();
     }
 
     @Override
-    public Bundle getExtras() {
-        return extras;
+    public int getPosition() {
+        return cursor.getPosition();
+    }
+
+    @Override
+    public boolean move(int offset) {
+        return cursor.move(offset);
+    }
+
+    @Override
+    public boolean moveToPosition(int position) {
+        return cursor.moveToPosition(position);
+    }
+
+    @Override
+    public boolean moveToFirst() {
+        return cursor.moveToFirst();
+    }
+
+    @Override
+    public boolean moveToLast() {
+        return cursor.moveToLast();
+    }
+
+    @Override
+    public boolean moveToNext() {
+        return cursor.moveToNext();
+    }
+
+    @Override
+    public boolean moveToPrevious() {
+        return cursor.moveToPrevious();
+    }
+
+    @Override
+    public boolean isFirst() {
+        return cursor.isFirst();
+    }
+
+    @Override
+    public boolean isLast() {
+        return cursor.isLast();
+    }
+
+    @Override
+    public boolean isBeforeFirst() {
+        return cursor.isBeforeFirst();
+    }
+
+    @Override
+    public boolean isAfterLast() {
+        return cursor.isAfterLast();
+    }
+
+    @Override
+    public int getColumnIndex(String columnName) {
+        return cursor.getColumnIndex(columnName);
+    }
+
+    @Override
+    public int getColumnIndexOrThrow(String columnName) throws IllegalArgumentException {
+        return cursor.getColumnIndexOrThrow(columnName);
+    }
+
+    @Override
+    public String getColumnName(int columnIndex) {
+        return cursor.getColumnName(columnIndex);
+    }
+
+    @Override
+    public String[] getColumnNames() {
+        return cursor.getColumnNames();
+    }
+
+    @Override
+    public int getColumnCount() {
+        return cursor.getColumnCount();
+    }
+
+    @Override
+    public byte[] getBlob(int columnIndex) {
+        return cursor.getBlob(columnIndex);
+    }
+
+    @Override
+    public String getString(int columnIndex) {
+        return cursor.getString(columnIndex);
+    }
+
+    @Override
+    public short getShort(int columnIndex) {
+        return cursor.getShort(columnIndex);
+    }
+
+    @Override
+    public int getInt(int columnIndex) {
+        return cursor.getInt(columnIndex);
+    }
+
+    @Override
+    public long getLong(int columnIndex) {
+        return cursor.getLong(columnIndex);
+    }
+
+    @Override
+    public float getFloat(int columnIndex) {
+        return cursor.getFloat(columnIndex);
+    }
+
+    @Override
+    public double getDouble(int columnIndex) {
+        return cursor.getDouble(columnIndex);
+    }
+
+    @Override
+    public int getType(int columnIndex) {
+        return cursor.getType(columnIndex);
+    }
+
+    @Override
+    public boolean isNull(int columnIndex) {
+        return cursor.isNull(columnIndex);
+    }
+
+    @Override
+    public void close() {
+        cursor.close();
+    }
+
+    @Override
+    public boolean isClosed() {
+        return cursor.isClosed();
     }
 
     /**

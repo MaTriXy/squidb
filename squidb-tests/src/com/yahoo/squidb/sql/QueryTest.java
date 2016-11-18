@@ -11,6 +11,7 @@ import com.yahoo.squidb.sql.Property.LongProperty;
 import com.yahoo.squidb.sql.Property.StringProperty;
 import com.yahoo.squidb.test.DatabaseTestCase;
 import com.yahoo.squidb.test.Employee;
+import com.yahoo.squidb.test.TestEnum;
 import com.yahoo.squidb.test.TestModel;
 import com.yahoo.squidb.test.TestViewModel;
 import com.yahoo.squidb.test.Thing;
@@ -46,23 +47,23 @@ public class QueryTest extends DatabaseTestCase {
         database.persist(bigBird);
 
         cookieMonster = new Employee();
-        cookieMonster.setName("cookieMonster").setManagerId(bigBird.getId());
+        cookieMonster.setName("cookieMonster").setManagerId(bigBird.getRowId());
         database.persist(cookieMonster);
 
         elmo = new Employee();
-        elmo.setName("elmo").setManagerId(bigBird.getId());
+        elmo.setName("elmo").setManagerId(bigBird.getRowId());
         database.persist(elmo);
 
         oscar = new Employee();
-        oscar.setName("oscar").setManagerId(bigBird.getId()).setIsHappy(false);
+        oscar.setName("oscar").setManagerId(bigBird.getRowId()).setIsHappy(false);
         database.persist(oscar);
 
         bert = new Employee();
-        bert.setName("bert").setManagerId(cookieMonster.getId());
+        bert.setName("bert").setManagerId(cookieMonster.getRowId());
         database.persist(bert);
 
         ernie = new Employee();
-        ernie.setName("ernie").setManagerId(bert.getId());
+        ernie.setName("ernie").setManagerId(bert.getRowId());
         database.persist(ernie);
     }
 
@@ -72,7 +73,7 @@ public class QueryTest extends DatabaseTestCase {
                         .and(TestModel.BIRTHDAY.gt(17))
                         .and(TestModel.LAST_NAME.neq("Smith")));
 
-        CompiledStatement compiledQuery = query.compile(database.getSqliteVersion());
+        CompiledStatement compiledQuery = query.compile(database.getCompileContext());
         verifyCompiledSqlArgs(compiledQuery, 3, "Sam", 17, "Smith");
     }
 
@@ -220,7 +221,7 @@ public class QueryTest extends DatabaseTestCase {
             assertEquals(expected.size(), cursor.getCount());
             for (Employee e : expected) {
                 cursor.moveToNext();
-                assertEquals(e.getId(), cursor.get(Employee.ID).longValue());
+                assertEquals(e.getRowId(), cursor.get(Employee.ID).longValue());
                 assertEquals(e.getName(), cursor.get(Employee.NAME));
             }
         } finally {
@@ -250,8 +251,8 @@ public class QueryTest extends DatabaseTestCase {
         int rowsWithManager = database.count(Employee.class, Employee.MANAGER_ID.gt(0));
         assertEquals(5, rowsWithManager);
 
-        List<String> resultEmployees = new ArrayList<String>(5);
-        List<String> resultManagers = new ArrayList<String>(5);
+        List<String> resultEmployees = new ArrayList<>(5);
+        List<String> resultManagers = new ArrayList<>(5);
         resultEmployees.add(cookieMonster.getName());
         resultManagers.add(bigBird.getName());
         resultEmployees.add(elmo.getName());
@@ -426,7 +427,7 @@ public class QueryTest extends DatabaseTestCase {
         TestModel fetched = database.fetchByCriterion(TestModel.class,
                 TestModel.FIRST_NAME.isEmpty().and(TestModel.LAST_NAME.isEmpty()), TestModel.ID);
         assertNotNull(fetched);
-        assertEquals(model.getId(), fetched.getId());
+        assertEquals(model.getRowId(), fetched.getRowId());
     }
 
     public void testIsNotEmptyCriterion() {
@@ -436,11 +437,11 @@ public class QueryTest extends DatabaseTestCase {
         TestModel fetched = database.fetchByCriterion(TestModel.class,
                 TestModel.FIRST_NAME.isNotEmpty().and(TestModel.LAST_NAME.isEmpty()), TestModel.ID);
         assertNotNull(fetched);
-        assertEquals(model.getId(), fetched.getId());
+        assertEquals(model.getRowId(), fetched.getRowId());
     }
 
     public void testReusableQuery() {
-        AtomicReference<String> name = new AtomicReference<String>();
+        AtomicReference<String> name = new AtomicReference<>();
         Query query = Query.select().where(Employee.NAME.eq(name));
         testReusableQueryInternal(name, "bigBird", query);
         testReusableQueryInternal(name, "cookieMonster", query);
@@ -490,7 +491,7 @@ public class QueryTest extends DatabaseTestCase {
         try {
             assertEquals(1, unhappyEmployee.getCount());
             unhappyEmployee.moveToFirst();
-            assertEquals(oscar.getId(), unhappyEmployee.get(Employee.ID).longValue());
+            assertEquals(oscar.getRowId(), unhappyEmployee.get(Employee.ID).longValue());
         } finally {
             unhappyEmployee.close();
         }
@@ -502,6 +503,22 @@ public class QueryTest extends DatabaseTestCase {
         } finally {
             happyEmployees.close();
         }
+    }
+
+    public void testEnumResolvedUsingName() {
+        Query query = Query.select(TestModel.SOME_ENUM).from(TestModel.TABLE)
+                .where(TestModel.SOME_ENUM.eq(TestEnum.APPLE));
+        CompiledStatement compiledStatement = query.compile(database.getCompileContext());
+        verifyCompiledSqlArgs(compiledStatement, 1, "APPLE");
+    }
+
+    public void testDatabaseProvidedArgumentResolver() {
+        database.useCustomArgumentBinder = true;
+        Query query = Query.select(TestModel.SOME_ENUM).from(TestModel.TABLE)
+                .where(TestModel.SOME_ENUM.eq(TestEnum.APPLE));
+
+        CompiledStatement compiledStatement = query.compile(database.getCompileContext());
+        verifyCompiledSqlArgs(compiledStatement, 1, 0);
     }
 
     public void testSimpleSubquerySelect() {
@@ -520,7 +537,7 @@ public class QueryTest extends DatabaseTestCase {
     }
 
     public void testReusableQueryWithInCriterion() {
-        Set<String> collection = new HashSet<String>();
+        Set<String> collection = new HashSet<>();
         Query query = Query.select().where(Employee.NAME.in(collection));
         testReusableQueryWithInCriterionInternal(collection, query, "bigBird", "cookieMonster", "elmo");
         testReusableQueryWithInCriterionInternal(collection, query, "bigBird", "cookieMonster");
@@ -545,14 +562,14 @@ public class QueryTest extends DatabaseTestCase {
 
     public void testQueryWithMaxSqlArgs() {
         int numRows = SqlStatement.MAX_VARIABLE_NUMBER + 1;
-        Set<Long> rowIds = new HashSet<Long>();
+        Set<Long> rowIds = new HashSet<>();
 
         database.beginTransaction();
         try {
             for (int i = 0; i < numRows; i++) {
                 TestModel testModel = new TestModel();
                 database.persist(testModel);
-                rowIds.add(testModel.getId());
+                rowIds.add(testModel.getRowId());
             }
             database.setTransactionSuccessful();
         } finally {
@@ -604,65 +621,65 @@ public class QueryTest extends DatabaseTestCase {
         }
     }
 
-    public void x_testReusableQueryPerformance() {
-        String[] values = {"bigBird", "cookieMonster", "elmo", "oscar"};
-        int numIterations = 10000;
-        long start = System.currentTimeMillis();
-        for (int i = 0; i < numIterations; i++) {
-            Query query = Query.select().where(Employee.NAME.eq(values[i % values.length]));
-            database.query(Employee.class, query);
-        }
-        long end = System.currentTimeMillis();
-        System.err.println("Unoptimized took " + (end - start) + " millis");
-
-        AtomicReference<String> reference = new AtomicReference<String>();
-        Query query = Query.select().where(Employee.NAME.eq(reference));
-        start = System.currentTimeMillis();
-        for (int i = 0; i < numIterations; i++) {
-            reference.set(values[i % values.length]);
-            database.query(Employee.class, query);
-        }
-        end = System.currentTimeMillis();
-        System.err.println("Optimized took " + (end - start) + " millis");
-    }
-
-    public void x_testReusableListQueryPerformance() {
-        List<?>[] testSets = {
-                Arrays.asList(new String[]{"bigBird", "cookieMonster", "elmo"}),
-                Arrays.asList(new String[]{"bigBird", "cookieMonster"}),
-                Arrays.asList(new String[]{"bert", "ernie"}),
-                Arrays.asList(new String[]{"oscar"}),
-                Arrays.asList(new String[]{})
-        };
-
-        int numIterations = 10000;
-        long start = System.currentTimeMillis();
-        for (int i = 0; i < numIterations; i++) {
-            Query query = Query.select().where(Employee.NAME.in(testSets[i % testSets.length]));
-            database.query(Employee.class, query);
-        }
-        long end = System.currentTimeMillis();
-        System.err.println("Unoptimized took " + (end - start) + " millis");
-        System.gc();
-        try {
-            Thread.sleep(5000);
-        } catch (InterruptedException e) {
-            e.printStackTrace();
-        }
-        AtomicReference<Collection<?>> ref = new AtomicReference<Collection<?>>();
-        Query query = Query.select().where(Employee.NAME.in(ref));
-        start = System.currentTimeMillis();
-        for (int i = 0; i < numIterations; i++) {
-            ref.set(testSets[i % testSets.length]);
-            database.query(Employee.class, query);
-        }
-        end = System.currentTimeMillis();
-        System.err.println("Optimized took " + (end - start) + " millis");
-    }
+//    public void x_testReusableQueryPerformance() {
+//        String[] values = {"bigBird", "cookieMonster", "elmo", "oscar"};
+//        int numIterations = 10000;
+//        long start = System.currentTimeMillis();
+//        for (int i = 0; i < numIterations; i++) {
+//            Query query = Query.select().where(Employee.NAME.eq(values[i % values.length]));
+//            database.query(Employee.class, query);
+//        }
+//        long end = System.currentTimeMillis();
+//        System.err.println("Unoptimized took " + (end - start) + " millis");
+//
+//        AtomicReference<String> reference = new AtomicReference<>();
+//        Query query = Query.select().where(Employee.NAME.eq(reference));
+//        start = System.currentTimeMillis();
+//        for (int i = 0; i < numIterations; i++) {
+//            reference.set(values[i % values.length]);
+//            database.query(Employee.class, query);
+//        }
+//        end = System.currentTimeMillis();
+//        System.err.println("Optimized took " + (end - start) + " millis");
+//    }
+//
+//    public void x_testReusableListQueryPerformance() {
+//        List<?>[] testSets = {
+//                Arrays.asList("bigBird", "cookieMonster", "elmo"),
+//                Arrays.asList("bigBird", "cookieMonster"),
+//                Arrays.asList("bert", "ernie"),
+//                Collections.singletonList("oscar"),
+//                Collections.emptyList()
+//        };
+//
+//        int numIterations = 10000;
+//        long start = System.currentTimeMillis();
+//        for (int i = 0; i < numIterations; i++) {
+//            Query query = Query.select().where(Employee.NAME.in(testSets[i % testSets.length]));
+//            database.query(Employee.class, query);
+//        }
+//        long end = System.currentTimeMillis();
+//        System.err.println("Unoptimized took " + (end - start) + " millis");
+//        System.gc();
+//        try {
+//            Thread.sleep(5000);
+//        } catch (InterruptedException e) {
+//            e.printStackTrace();
+//        }
+//        AtomicReference<Collection<?>> ref = new AtomicReference<>();
+//        Query query = Query.select().where(Employee.NAME.in(ref));
+//        start = System.currentTimeMillis();
+//        for (int i = 0; i < numIterations; i++) {
+//            ref.set(testSets[i % testSets.length]);
+//            database.query(Employee.class, query);
+//        }
+//        end = System.currentTimeMillis();
+//        System.err.println("Optimized took " + (end - start) + " millis");
+//    }
 
     public void testSelectFromView() {
         View view = View.fromQuery(Query.select(Employee.PROPERTIES)
-                .from(Employee.TABLE).where(Employee.MANAGER_ID.eq(bigBird.getId())), "bigBirdsEmployees");
+                .from(Employee.TABLE).where(Employee.MANAGER_ID.eq(bigBird.getRowId())), "bigBirdsEmployees");
 
         database.tryCreateView(view);
 
@@ -763,7 +780,7 @@ public class QueryTest extends DatabaseTestCase {
         try {
             assertEquals(1, cursor.getCount());
             cursor.moveToFirst();
-            assertEquals(bigBird.getId(), cursor.get(Employee.MANAGER_ID).longValue());
+            assertEquals(bigBird.getRowId(), cursor.get(Employee.MANAGER_ID).longValue());
         } finally {
             cursor.close();
         }
@@ -776,14 +793,14 @@ public class QueryTest extends DatabaseTestCase {
 
     private void testJoinWithUsingClauseInternal(boolean leftJoin) {
         final String separator = "|";
-        final Map<Long, String> expectedResults = new HashMap<Long, String>();
-        expectedResults.put(cookieMonster.getId(), "2|3|4");
-        expectedResults.put(elmo.getId(), "2|3|4");
-        expectedResults.put(oscar.getId(), "2|3|4");
+        final Map<Long, String> expectedResults = new HashMap<>();
+        expectedResults.put(cookieMonster.getRowId(), "2|3|4");
+        expectedResults.put(elmo.getRowId(), "2|3|4");
+        expectedResults.put(oscar.getRowId(), "2|3|4");
         if (!leftJoin) {
-            expectedResults.put(bigBird.getId(), "1");
-            expectedResults.put(bert.getId(), "5");
-            expectedResults.put(ernie.getId(), "6");
+            expectedResults.put(bigBird.getRowId(), "1");
+            expectedResults.put(bert.getRowId(), "5");
+            expectedResults.put(ernie.getRowId(), "6");
         }
 
         /*
@@ -1024,9 +1041,9 @@ public class QueryTest extends DatabaseTestCase {
         Query query = Query.select().from(subqueryTable).innerJoin(joinTable, (Criterion[]) null)
                 .union(compoundSubquery);
 
-        final int queryLength = query.compile(database.getSqliteVersion()).sql.length();
+        final int queryLength = query.compile(database.getCompileContext()).sql.length();
 
-        String withValidation = query.sqlForValidation(database.getSqliteVersion());
+        String withValidation = query.sqlForValidation(database.getCompileContext());
         assertEquals(queryLength + 6, withValidation.length());
     }
 
@@ -1088,35 +1105,35 @@ public class QueryTest extends DatabaseTestCase {
     public void testNeedsValidationUpdatedBySubqueryTable() {
         Query subquery = Query.select(Thing.PROPERTIES).from(Thing.TABLE).where(Criterion.literal(123));
         subquery.requestValidation();
-        assertTrue(subquery.compile(database.getSqliteVersion()).sql.contains("WHERE (?)"));
+        assertTrue(subquery.compile(database.getCompileContext()).sql.contains("WHERE (?)"));
 
         Query baseTestQuery = Query.select().from(Thing.TABLE).where(Thing.FOO.isNotEmpty()).freeze();
         assertFalse(baseTestQuery.needsValidation());
 
         Query testQuery = baseTestQuery.from(subquery.as("t1"));
-        assertTrue(testQuery.compile(database.getSqliteVersion()).needsValidation);
-        assertTrue(testQuery.sqlForValidation(database.getSqliteVersion()).contains("WHERE ((?))"));
+        assertTrue(testQuery.compile(database.getCompileContext()).needsValidation);
+        assertTrue(testQuery.sqlForValidation(database.getCompileContext()).contains("WHERE ((?))"));
 
         testQuery = baseTestQuery.innerJoin(subquery.as("t2"), (Criterion[]) null);
-        assertTrue(testQuery.compile(database.getSqliteVersion()).needsValidation);
-        assertTrue(testQuery.sqlForValidation(database.getSqliteVersion()).contains("WHERE ((?))"));
+        assertTrue(testQuery.compile(database.getCompileContext()).needsValidation);
+        assertTrue(testQuery.sqlForValidation(database.getCompileContext()).contains("WHERE ((?))"));
 
         testQuery = baseTestQuery.union(subquery);
-        assertTrue(testQuery.compile(database.getSqliteVersion()).needsValidation);
-        assertTrue(testQuery.sqlForValidation(database.getSqliteVersion()).contains("WHERE ((?))"));
+        assertTrue(testQuery.compile(database.getCompileContext()).needsValidation);
+        assertTrue(testQuery.sqlForValidation(database.getCompileContext()).contains("WHERE ((?))"));
     }
 
     public void testNeedsValidationUpdatedByQueryFunction() {
         Query subquery = Query.select(Function.max(Thing.ID)).from(Thing.TABLE).where(Criterion.literal(123));
         subquery.requestValidation();
-        assertTrue(subquery.compile(database.getSqliteVersion()).sql.contains("WHERE (?)"));
+        assertTrue(subquery.compile(database.getCompileContext()).sql.contains("WHERE (?)"));
 
         Query baseTestQuery = Query.select().from(Thing.TABLE).where(Thing.FOO.isNotEmpty()).freeze();
         assertFalse(baseTestQuery.needsValidation());
 
         Query testQuery = baseTestQuery.selectMore(subquery.asFunction());
-        assertTrue(testQuery.compile(database.getSqliteVersion()).needsValidation);
-        assertTrue(testQuery.sqlForValidation(database.getSqliteVersion()).contains("WHERE ((?))"));
+        assertTrue(testQuery.compile(database.getCompileContext()).needsValidation);
+        assertTrue(testQuery.sqlForValidation(database.getCompileContext()).contains("WHERE ((?))"));
     }
 
     public void testLiteralCriterions() {
@@ -1170,5 +1187,16 @@ public class QueryTest extends DatabaseTestCase {
         } finally {
             cursor.close();
         }
+    }
+
+    public void testReadUnicodeStrings() {
+        // A bunch of random unicode characters
+        String unicode = "\u2e17\u301c\ufe58\uff0d\ufe32";
+        String reversedUnicode = "\ufe32\uff0d\ufe58\u301c\u2e17";
+        TestModel model = insertBasicTestModel(unicode, reversedUnicode, System.currentTimeMillis());
+
+        TestModel fetched = database.fetch(TestModel.class, model.getRowId());
+        assertEquals(unicode, fetched.getFirstName());
+        assertEquals(reversedUnicode, fetched.getLastName());
     }
 }

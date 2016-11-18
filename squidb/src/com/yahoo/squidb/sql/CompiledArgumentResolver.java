@@ -5,9 +5,7 @@
  */
 package com.yahoo.squidb.sql;
 
-import android.util.Log;
-
-import com.yahoo.squidb.utility.SquidUtilities;
+import com.yahoo.squidb.utility.Logger;
 
 import java.util.ArrayList;
 import java.util.Collection;
@@ -24,6 +22,7 @@ class CompiledArgumentResolver {
 
     private final String compiledSql;
     private final List<Object> sqlArgs;
+    private final CompileContext compileContext;
     private final boolean needsValidation;
 
     private List<Collection<?>> collectionArgs;
@@ -37,12 +36,13 @@ class CompiledArgumentResolver {
     public CompiledArgumentResolver(SqlBuilder builder) {
         this.compiledSql = builder.getSqlString();
         this.sqlArgs = builder.getBoundArguments();
+        this.compileContext = builder.compileContext;
         this.needsValidation = builder.needsValidation();
         if (compiledSql.contains(SqlStatement.REPLACEABLE_ARRAY_PARAMETER)) {
-            collectionArgs = new ArrayList<Collection<?>>();
+            collectionArgs = new ArrayList<>();
             findCollectionArgs();
-            compiledSqlCache = new SimpleLruCache<String, String>(CACHE_SIZE);
-            argArrayCache = new SimpleLruCache<String, Object[]>(CACHE_SIZE);
+            compiledSqlCache = new SimpleLruCache<>(CACHE_SIZE);
+            argArrayCache = new SimpleLruCache<>(CACHE_SIZE);
         }
     }
 
@@ -93,7 +93,7 @@ class CompiledArgumentResolver {
                 result.append(compiledSql.substring(lastStringIndex, m.start()));
                 Collection<?> values = collectionArgs.get(index);
                 if (largeArgMode) {
-                    SqlUtils.addInlineCollectionToSqlString(result, values);
+                    SqlUtils.addInlineCollectionToSqlString(result, compileContext.getArgumentResolver(), values);
                 } else {
                     appendCollectionVariableStringForSize(result, values.size());
                 }
@@ -106,10 +106,10 @@ class CompiledArgumentResolver {
             if (!largeArgMode) {
                 compiledSqlCache.put(cacheKey, resultSql);
             } else {
-                Log.w(SquidUtilities.LOG_TAG,
+                Logger.w(Logger.LOG_TAG,
                         "The SQL statement \"" + resultSql.substring(0, Math.min(200, resultSql.length()))
-                                + " ...\" had too many arguments to bind, so arguments were inlined into the SQL instead."
-                                + " Consider revising your statement to have fewer arguments.");
+                                + " ...\" had too many arguments to bind, so arguments were inlined into the SQL "
+                                + "instead. Consider revising your statement to have fewer arguments.");
             }
             return resultSql;
         } else {
@@ -145,7 +145,16 @@ class CompiledArgumentResolver {
                 compiledArgs = sqlArgs.toArray(new Object[sqlArgs.size()]);
             }
         }
-        return compiledArgs;
+        return applyArgumentResolver(compiledArgs);
+    }
+
+    private Object[] applyArgumentResolver(Object[] args) {
+        ArgumentResolver resolver = compileContext.getArgumentResolver();
+        Object[] result = new Object[args.length];
+        for (int i = 0; i < args.length; i++) {
+            result[i] = resolver.resolveArgument(args[i]);
+        }
+        return result;
     }
 
     private int calculateArgsSizeWithCollectionArgs() {

@@ -5,21 +5,38 @@
  */
 package com.yahoo.squidb.sql;
 
+import com.yahoo.squidb.data.ValuesStorage;
+import com.yahoo.squidb.utility.SquidUtilities;
 import com.yahoo.squidb.utility.VersionCode;
 
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Builder class for a SQLite INSERT statement
  */
 public class Insert extends TableStatement {
 
+    /**
+     * Minimum SQLite version supporting multi-row insert. If you want to check at runtime if multi-row insert is
+     * available, you can check if your SquidDatabase is connected to a version of SQLite greater than or equal to this
+     * version:
+     * <pre>
+     *     if (myDatabase.getSqliteVersion().isAtLeast(Insert.SQLITE_VERSION_MULTI_ROW_INSERT)) {
+     *         // Safe to use multi-row insert in this case
+     *     } else {
+     *         // Not safe to use multi-row insert otherwise
+     *     }
+     * </pre>
+     */
+    public static final VersionCode SQLITE_VERSION_MULTI_ROW_INSERT = new VersionCode(3, 7, 11, 0);
+
     private final SqlTable<?> table;
     private ConflictAlgorithm conflictAlgorithm = ConflictAlgorithm.NONE;
-    private final List<String> columns = new ArrayList<String>();
-    private final List<List<Object>> valuesToInsert = new ArrayList<List<Object>>();
+    private final List<String> columns = new ArrayList<>();
+    private final List<List<Object>> valuesToInsert = new ArrayList<>();
     private Query query;
     private boolean defaultValues;
 
@@ -62,14 +79,21 @@ public class Insert extends TableStatement {
         return this;
     }
 
+    public Insert columns(String... columnNames) {
+        SquidUtilities.addAll(this.columns, columnNames);
+        defaultValues = false;
+        invalidateCompileCache();
+        return this;
+    }
+
     /**
      * Specify a set of values to insert. The number of values must equal the number of columns specified and the order
      * must match the order of the columns.
      * <p>
-     * If you are using a SQLite version < 3.7.11 (Android API < 16 for stock SQLite), you should not call this method
-     * more than once, as inserting multiple rows with a single statement is only supported for SQLite version 3.7.11
-     * and higher. Calling this method more than once may cause an exception to be thrown when trying to execute the
-     * statement.
+     * If you are using a SQLite version %lt; 3.7.11 (Android API %lt; 16 for stock SQLite), you should not call this
+     * method more than once, as inserting multiple rows with a single statement is only supported for SQLite version
+     * 3.7.11 and higher. Calling this method more than once may cause an exception to be thrown when trying to execute
+     * the statement.
      *
      * @param values the values to insert
      * @return this Insert object, to allow chaining method calls
@@ -92,6 +116,23 @@ public class Insert extends TableStatement {
         this.query = select;
         valuesToInsert.clear();
         defaultValues = false;
+        invalidateCompileCache();
+        return this;
+    }
+
+    /**
+     * Sets columns and values to insert based on the contents of the {@link ValuesStorage}
+     *
+     * @param values a ValuesStorage where keys are column names and values are values to insert
+     * @return this Insert object, to allow chaining method calls
+     */
+    public Insert fromValues(ValuesStorage values) {
+        List<Object> valuesToInsert = new ArrayList<>();
+        for (Map.Entry<String, Object> entry : values.valueSet()) {
+            this.columns.add(entry.getKey());
+            valuesToInsert.add(entry.getValue());
+        }
+        this.valuesToInsert.add(valuesToInsert);
         invalidateCompileCache();
         return this;
     }
@@ -195,7 +236,8 @@ public class Insert extends TableStatement {
     }
 
     private void visitValues(SqlBuilder builder, boolean forSqlValidation) {
-        if (builder.sqliteVersion.isLessThan(VersionCode.V3_7_11) && valuesToInsert.size() > 1) {
+        if (builder.compileContext.getVersionCode().isLessThan(SQLITE_VERSION_MULTI_ROW_INSERT)
+                && valuesToInsert.size() > 1) {
             throw new UnsupportedOperationException("Can't insert with multiple sets of values below "
                     + "SQLite version 3.7.11");
         }

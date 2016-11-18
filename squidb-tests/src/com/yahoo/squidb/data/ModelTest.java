@@ -5,10 +5,10 @@
  */
 package com.yahoo.squidb.data;
 
-import android.content.ContentValues;
-
 import com.yahoo.squidb.sql.Property;
+import com.yahoo.squidb.sql.Query;
 import com.yahoo.squidb.test.DatabaseTestCase;
+import com.yahoo.squidb.test.TestEnum;
 import com.yahoo.squidb.test.TestModel;
 import com.yahoo.squidb.test.Thing;
 
@@ -32,6 +32,23 @@ public class ModelTest extends DatabaseTestCase {
         database.persist(model);
         assertTrue(model.isSaved());
         assertFalse(model.isModified());
+    }
+
+    public void testContainsNonNullValueMethod() {
+        TestModel model = new TestModel();
+        model.setFirstName("Test");
+        model.markSaved(); // Move values from set values into database values
+        assertEquals("Test", model.getFirstName());
+        assertFalse(model.fieldIsDirty(TestModel.FIRST_NAME));
+        assertNull(model.getSetValues());
+        assertTrue(model.containsNonNullValue(TestModel.FIRST_NAME));
+
+        model.setFirstName(null);
+        // Assert that despite the presence of a non-null value in the database values, containsNonNullValue
+        // defers to the "active" setValue.
+        assertNotNull(model.getDatabaseValues().get(TestModel.FIRST_NAME.getName()));
+        assertNull(model.getFirstName());
+        assertFalse(model.containsNonNullValue(TestModel.FIRST_NAME));
     }
 
     public void testAddedModelMethods() {
@@ -60,7 +77,7 @@ public class ModelTest extends DatabaseTestCase {
         assertEquals(1, database.countAll(TestModel.class));
 
         // query
-        final long id = model.getId();
+        final long id = model.getRowId();
         TestModel fetched = database.fetch(TestModel.class, id, TestModel.PROPERTIES);
         assertNotNull(fetched);
 
@@ -77,19 +94,19 @@ public class ModelTest extends DatabaseTestCase {
     public void testCrudMethodsWithNonDefaultPrimaryKey() {
         Thing thing = new Thing();
         database.persist(thing);
-        assertEquals(1, thing.getId());
+        assertEquals(1, thing.getRowId());
 
-        Thing fetched = database.fetch(Thing.class, thing.getId(), Thing.PROPERTIES);
+        Thing fetched = database.fetch(Thing.class, thing.getRowId(), Thing.PROPERTIES);
         assertNotNull(fetched);
 
         thing.setFoo("new foo");
         database.persist(thing);
-        fetched = database.fetch(Thing.class, thing.getId(), Thing.PROPERTIES);
+        fetched = database.fetch(Thing.class, thing.getRowId(), Thing.PROPERTIES);
         assertEquals("new foo", fetched.getFoo());
         assertEquals(1, database.countAll(Thing.class));
 
         // delete
-        assertTrue(database.delete(Thing.class, thing.getId()));
+        assertTrue(database.delete(Thing.class, thing.getRowId()));
         assertEquals(0, database.countAll(Thing.class));
     }
 
@@ -99,80 +116,6 @@ public class ModelTest extends DatabaseTestCase {
                 fail("The PROPERTIES array contained a deprecated property");
             }
         }
-    }
-
-    public void testTypesafeReadFromContentValues() {
-        testContentValuesTypes(false);
-    }
-
-    public void testTypesafeSetFromContentValues() {
-        testContentValuesTypes(true);
-    }
-
-    private void testContentValuesTypes(final boolean useSetValues) {
-        final ContentValues values = new ContentValues();
-        values.put(TestModel.FIRST_NAME.getName(), "A");
-        values.put(TestModel.LAST_NAME.getName(), "B");
-        values.put(TestModel.BIRTHDAY.getName(), 1); // Putting an int where long expected
-        values.put(TestModel.IS_HAPPY.getName(), 1); // Putting an int where boolean expected
-        values.put(TestModel.SOME_DOUBLE.getName(), 1); // Putting an int where double expected
-        values.put(TestModel.$_123_ABC.getName(), "1"); // Putting a String where int expected
-
-        TestModel fromValues;
-        if (useSetValues) {
-            fromValues = new TestModel();
-            fromValues.setPropertiesFromContentValues(values, TestModel.PROPERTIES);
-        } else {
-            fromValues = new TestModel(values);
-        }
-
-        // Check the types stored in the values
-        ContentValues checkTypesOn = useSetValues ? fromValues.getSetValues() : fromValues.getDatabaseValues();
-        assertTrue(checkTypesOn.get(TestModel.FIRST_NAME.getName()) instanceof String);
-        assertTrue(checkTypesOn.get(TestModel.LAST_NAME.getName()) instanceof String);
-        assertTrue(checkTypesOn.get(TestModel.BIRTHDAY.getName()) instanceof Long);
-        assertTrue(checkTypesOn.get(TestModel.IS_HAPPY.getName()) instanceof Boolean);
-        assertTrue(checkTypesOn.get(TestModel.SOME_DOUBLE.getName()) instanceof Double);
-        assertTrue(checkTypesOn.get(TestModel.$_123_ABC.getName()) instanceof Integer);
-
-        // Check the types using the model getters
-        assertEquals("A", fromValues.getFirstName());
-        assertEquals("B", fromValues.getLastName());
-        assertEquals(1L, fromValues.getBirthday().longValue());
-        assertTrue(fromValues.isHappy());
-        assertEquals(1.0, fromValues.getSomeDouble());
-        assertEquals(1, fromValues.get$123abc().intValue());
-
-        values.clear();
-        values.put(TestModel.IS_HAPPY.getName(), "ABC");
-        testThrowsException(new Runnable() {
-            @Override
-            public void run() {
-                if (useSetValues) {
-                    new TestModel().setPropertiesFromContentValues(values, TestModel.IS_HAPPY);
-                } else {
-                    new TestModel(values);
-                }
-            }
-        }, ClassCastException.class);
-    }
-
-    public void testValueCoercionAppliesToAllValues() {
-        // Make sure the model is initialized with values and setValues
-        ContentValues values = new ContentValues();
-        values.put(TestModel.FIRST_NAME.getName(), "A");
-        TestModel model = new TestModel();
-        model.readPropertiesFromContentValues(values, TestModel.FIRST_NAME);
-        model.setFirstName("B");
-
-        model.getDefaultValues().put(TestModel.IS_HAPPY.getName(), 1);
-        assertTrue(model.isHappy()); // Test default values
-        model.getDatabaseValues().put(TestModel.IS_HAPPY.getName(), 0);
-        assertFalse(model.isHappy()); // Test database values
-        model.getSetValues().put(TestModel.IS_HAPPY.getName(), 1);
-        assertTrue(model.isHappy()); // Test set values
-
-        model.getDefaultValues().put(TestModel.IS_HAPPY.getName(), true); // Reset the static variable
     }
 
     public void testFieldIsDirty() {
@@ -203,5 +146,33 @@ public class ModelTest extends DatabaseTestCase {
         assertFalse(model.hasTransitory(key1));
         assertTrue(model.checkAndClearTransitory(key2));
         assertFalse(model.hasTransitory(key2));
+    }
+
+    public void testEnumProperties() {
+        final TestEnum enumValue = TestEnum.APPLE;
+        final String enumAsString = enumValue.name();
+        TestModel model = new TestModel()
+                .setFirstName("A")
+                .setLastName("Z")
+                .setBirthday(System.currentTimeMillis())
+                .setSomeEnum(enumValue);
+
+        ValuesStorage setValues = model.getSetValues();
+        assertEquals(enumAsString, setValues.get(TestModel.SOME_ENUM.getName()));
+
+        database.persist(model);
+
+        SquidCursor<TestModel> cursor = database.query(TestModel.class, Query.select()
+                .where(TestModel.SOME_ENUM.eq(TestEnum.APPLE)));
+        assertEquals(1, cursor.getCount());
+        assertTrue(cursor.moveToFirst());
+        assertEquals(enumAsString, cursor.get(TestModel.SOME_ENUM));
+
+        TestModel fromDatabase = new TestModel(cursor);
+        assertEquals(enumValue, fromDatabase.getSomeEnum());
+    }
+
+    public void testNonPublicConstantCopying() {
+        assertEquals("somePackageProtectedConst", TestModel.PACKAGE_PROTECTED_CONST);
     }
 }
