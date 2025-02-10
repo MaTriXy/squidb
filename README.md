@@ -1,5 +1,7 @@
 [![Join the chat at https://gitter.im/yahoo/squidb](https://badges.gitter.im/yahoo/squidb.svg)](https://gitter.im/yahoo/squidb?utm_source=badge&utm_medium=badge&utm_campaign=pr-badge&utm_content=badge) [![Build Status](https://travis-ci.org/yahoo/squidb.svg?branch=master)](https://travis-ci.org/yahoo/squidb) [![Download](https://api.bintray.com/packages/yahoo/maven/squidb/images/download.svg) ](https://bintray.com/yahoo/maven/squidb/_latestVersion)
 
+Most ongoing development is currently taking place on the `dev_4.0` branch. Click [here](https://github.com/yahoo/squidb/tree/dev_4.0) to see the latest changes and try out the 4.0 beta.
+
 ## Introducing SquiDB
 SquiDB is a cross-platform SQLite database layer for Android and iOS. It is designed to make it as easy as possible to work with SQLite databases while still enabling the power and flexibility of raw SQL. SquiDB combines typesafe objects that represent table rows with object-oriented SQL statement builders to make it easy to read and write your data without a bunch of messy SQL strings. It also includes built in tools and hooks to help you easily write database migrations as well as implement ContentProviders.
 
@@ -26,14 +28,18 @@ repositories {
 
 // Only needed if using the android gradle plugin version less than 2.2.0
 // apply plugin: 'com.neenbedankt.android-apt'
+// If using Kotlin, you may need to use this plugin instead of the default annotationProcessor configuration
+// apply plugin: 'kotlin-kapt'
 
 dependencies {
-    compile 'com.yahoo.squidb:squidb:3.2.0'
-    compile 'com.yahoo.squidb:squidb-annotations:3.2.0'
-    compile 'com.yahoo.squidb:squidb-android:3.2.0' // For Android projects only
-    annotationProcessor 'com.yahoo.squidb:squidb-processor:3.2.0'
+    compile 'com.yahoo.squidb:squidb:3.2.3'
+    compile 'com.yahoo.squidb:squidb-annotations:3.2.3'
+    compile 'com.yahoo.squidb:squidb-android:3.2.3' // For Android projects only
+    annotationProcessor 'com.yahoo.squidb:squidb-processor:3.2.3'
     // If using the android-apt plugin, this becomes
-    // apt 'com.yahoo.squidb:squidb-processor:3.2.0'
+    // apt 'com.yahoo.squidb:squidb-processor:3.2.3'
+    // If using kotlin language, this becomes
+    // kapt 'com.yahoo.squidb:squidb-processor:3.2.3'
 }
 ```
 See [this wiki page](https://github.com/yahoo/squidb/wiki/Adding-SquiDB-as-a-dependency) for more detailed instructions on adding SquiDB as a dependency.

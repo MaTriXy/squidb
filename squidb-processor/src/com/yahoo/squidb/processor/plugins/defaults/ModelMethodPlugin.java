@@ -35,8 +35,9 @@ import javax.tools.Diagnostic;
 
 /**
  * A {@link Plugin} that controls copying public static methods or methods annotated with {@link ModelMethod}
- * to the generated model. It is enabled by default. It can be disabled by passing a bitmask with the
- * {@link PluginEnvironment#OPTIONS_DISABLE_DEFAULT_METHOD_HANDLING} flag set.
+ * to the generated model. It is enabled by default but can be disabled by passing
+ * {@link PluginEnvironment#OPTIONS_DISABLE_DEFAULT_METHOD_HANDLING 'disableModelMethod'} as one of the
+ * values for the 'squidbOptions' key.
  */
 public class ModelMethodPlugin extends Plugin {
 
@@ -128,14 +129,12 @@ public class ModelMethodPlugin extends Plugin {
         } else {
             List<? extends VariableElement> params = e.getParameters();
             if (params.size() == 0) {
-                utils.getMessager().printMessage(Diagnostic.Kind.ERROR,
-                        "@ModelMethod methods must have an abstract model as their first argument", e);
+                modelSpec.logError("@ModelMethod methods must have an abstract model as their first argument", e);
             } else {
                 VariableElement firstParam = params.get(0);
                 TypeMirror paramType = firstParam.asType();
                 if (!checkFirstArgType(paramType, modelClass)) {
-                    utils.getMessager().printMessage(Diagnostic.Kind.ERROR,
-                            "@ModelMethod methods must have an abstract model as their first argument", e);
+                    modelSpec.logError("@ModelMethod methods must have an abstract model as their first argument", e);
                 } else {
                     modelMethods.add(e);
                 }

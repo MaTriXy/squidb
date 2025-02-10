@@ -6,7 +6,9 @@
 package com.yahoo.squidb.processor.plugins.defaults.properties;
 
 import com.yahoo.aptutils.model.DeclaredTypeName;
+import com.yahoo.squidb.annotations.Alias;
 import com.yahoo.squidb.annotations.ViewQuery;
+import com.yahoo.squidb.processor.SqlUtils;
 import com.yahoo.squidb.processor.TypeConstants;
 import com.yahoo.squidb.processor.data.ModelSpec;
 import com.yahoo.squidb.processor.data.ViewModelSpecWrapper;
@@ -14,7 +16,6 @@ import com.yahoo.squidb.processor.plugins.PluginEnvironment;
 import com.yahoo.squidb.processor.plugins.defaults.properties.generators.PropertyGenerator;
 
 import javax.lang.model.element.VariableElement;
-import javax.tools.Diagnostic;
 
 /**
  * This plugin controls generating property declarations, getters, and setters for fields in a view model. It can
@@ -39,11 +40,9 @@ public class ViewModelSpecFieldPlugin extends FieldReferencePlugin {
         if (TypeConstants.isVisibleConstant(field)) {
             if (isViewQuery != null) {
                 if (!TypeConstants.QUERY.equals(fieldType)) {
-                    utils.getMessager().printMessage(Diagnostic.Kind.ERROR,
-                            "ViewQuery must be an instance of " + TypeConstants.QUERY.toString());
+                    modelSpec.logError("ViewQuery must be an instance of " + TypeConstants.QUERY.toString(), field);
                 } else if (modelSpec.hasMetadata(ViewModelSpecWrapper.METADATA_KEY_QUERY_ELEMENT)) {
-                    utils.getMessager().printMessage(Diagnostic.Kind.ERROR,
-                            "Only one ViewQuery can be declared per spec");
+                    modelSpec.logError("Only one ViewQuery can be declared per spec", field);
                 } else {
                     modelSpec.putMetadata(ViewModelSpecWrapper.METADATA_KEY_VIEW_QUERY, isViewQuery);
                     modelSpec.putMetadata(ViewModelSpecWrapper.METADATA_KEY_QUERY_ELEMENT, field);
@@ -53,9 +52,17 @@ public class ViewModelSpecFieldPlugin extends FieldReferencePlugin {
                 return super.processVariableElement(field, fieldType);
             }
         } else if (isViewProperty) {
-            utils.getMessager().printMessage(Diagnostic.Kind.ERROR,
-                    "View properties must be public static final", field);
+            modelSpec.logError("View properties must be static final and non-private", field);
         }
         return false;
+    }
+
+    @Override
+    protected PropertyGenerator getPropertyGenerator(VariableElement field, DeclaredTypeName fieldType) {
+        Alias alias = field.getAnnotation(Alias.class);
+        if (alias != null) {
+            SqlUtils.checkIdentifier(alias.value().trim(), "view column name", modelSpec, field, utils);
+        }
+        return super.getPropertyGenerator(field, fieldType);
     }
 }

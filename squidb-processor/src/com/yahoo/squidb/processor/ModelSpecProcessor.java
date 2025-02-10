@@ -42,10 +42,10 @@ import javax.tools.Diagnostic.Kind;
  *
  *     String lastName;
  *
- *     &#064;PropertyExtras(columnName="creationDate")
+ *     &#064;ColumnSpec(name="creationDate")
  *     long birthday;
  *
- *     &#064;PropertyExtras(defaultValue="true")
+ *     &#064;ColumnSpec(defaultValue="true")
  *     boolean isHappy;
  * }
  * </pre>
@@ -85,9 +85,7 @@ public final class ModelSpecProcessor extends AbstractProcessor {
     @Override
     public synchronized void init(ProcessingEnvironment env) {
         super.init(env);
-
         utils = new AptUtils(env);
-
         pluginEnv = new PluginEnvironment(utils, env.getOptions());
     }
 
